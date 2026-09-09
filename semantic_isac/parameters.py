@@ -28,7 +28,7 @@ UE_HEIGHT = 1.5             # [m]
 # Wireless
 CARRIER = 3e9       # [Hz]
 NUMEROLOGY = 0
-NUM_SCS = 240
+NUM_SCS = 300
 NUM_SYM = 14
 NUM_SLOTS = 5 * 2 ** NUMEROLOGY
 NUM_FRAMES = 100
