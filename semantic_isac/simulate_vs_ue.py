@@ -35,7 +35,7 @@ if __name__ == "__main__":
     ra_label, parallel, data_folder, debug, overwrite, concurrent, on_gpu = p.common_parser()
 
     ### MAIN SIMULATION PARAMETERS ###
-    num_ue_vec = np.array([5, 10, 15, 20, 30])
+    num_ue_vec = p.NUM_SLOTS * np.arange(1, 7)
     num_episodes = int(1e3)
 
     # Saving parameters
