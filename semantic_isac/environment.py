@@ -957,7 +957,6 @@ def run_episode(episode: int,
                 step_kwargs: dict | None = None,
                 save_folder: str = p.DATA_FOLDER,
                 gpu_guard: type[multiprocessing.Semaphore] | None = None,
-                torch_threads: int = 1,
                 save: bool = True,
                 verbose: bool = False) -> dict:
     """Run one full simulation episode: build the environment, wire up the modules, step
@@ -977,7 +976,6 @@ def run_episode(episode: int,
         (cto, cfo, sync).
     :param save_folder: str, directory the output .npz is written to.
     :param gpu_guard: multiprocessing.Semaphore, set to the GPU access to grant.
-    :param torch_threads: int, number of threads available for torch operations.
     :param save: bool, if False, skip saving (useful for quick interactive runs).
     :param verbose: bool, print a per-frame progress bar.
 
@@ -990,9 +988,7 @@ def run_episode(episode: int,
     guard = gpu_guard if on_gpu else contextlib.nullcontext()
     device = torch.device("cuda") if on_gpu else torch.device("cpu")
 
-    # Set up workers for torch
-    torch.set_num_threads(torch_threads)
-
+    # Take the kwargs
     ra_kwargs = ra_kwargs or {}
     env_kwargs = env_kwargs or {}
     step_kwargs = step_kwargs or {}
