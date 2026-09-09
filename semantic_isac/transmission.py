@@ -139,7 +139,7 @@ class TransmissionAbstraction(TransmissionBase):
                 block.to(self.device)
 
         # Compile the core method if possible (on default to avoid high VRAM occupancy)
-        compile_mode = "default"  # "reduce-overhead" if torch.cuda.is_available() else "default"
+        compile_mode = "reduce-overhead" if torch.cuda.is_available() else "default"
         self._compiled_core = torch.compile(self._core, mode=compile_mode)
 
     def _core(self, h: torch.Tensor, tx_power: torch.Tensor, no: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
