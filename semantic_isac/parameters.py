@@ -56,8 +56,8 @@ RT_PARAM = {
     "diffraction": False,
     "edge_diffraction": False,
     "synthetic_array": False,
-    "samples_per_tx": int(1e7),
-    "cell_size": mi.Point2f((1., 1.)),
+    "samples_per_tx": int(1e8),
+    "cell_size": mi.Point2f((2., 2.)),
 }
 
 scattering_coefficient_dict = {
@@ -89,7 +89,7 @@ def common_parser():
     parser.add_argument('--debug', action='store_true', help="Enable debug mode")
     parser.add_argument("--overwrite", action='store_true', help="Overwrite results eve if already present in the savedir")
     parser.add_argument("--concurrent", type=int, default=1, help="Set the number of concurrent scripts run")
-    parser.add_argument("--gpu", type=bool, default=True, help="Set the GPU usage")
+    parser.add_argument("--gpu", action='store_true', help="Set the GPU usage")
 
     args = parser.parse_args()
 
