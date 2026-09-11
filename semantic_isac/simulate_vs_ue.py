@@ -89,7 +89,7 @@ if __name__ == "__main__":
                             print(f"\tWarning: couldn't reuse cached episode {ep} ({out_path}): {e} -- re-running it.")
                     episode_kwargs.append(dict(episode=ep, ra_method=ra_method,
                                                env_kwargs={"num_ue": int(num_ue)},
-                                               save_folder=save_folder_per_ep,
+                                               results_folder=save_folder_per_ep,
                                                gpu_guard=gpu_semaphore, verbose=verbose))
 
                 print(f"\t{len(results)}/{num_episodes} episodes already done, running {len(episode_kwargs)} more.")
