@@ -73,14 +73,15 @@ if __name__ == "__main__":
                 gpu_semaphore = threading.Semaphore(gpu_slots) if on_gpu else None
 
                 # Define save folder per episode
-                save_folder_per_ep = os.path.join(data_folder, prefix + f"_U{num_ue:03d}")
-                os.makedirs(save_folder_per_ep, exist_ok=True)
+                env_dirpath = os.path.join(p.ENV_FOLDER, f"UE{num_ue:03d}")
+                save_ep_dirpath = os.path.join(data_folder, prefix + f"_U{num_ue:03d}")
+                os.makedirs(save_ep_dirpath, exist_ok=True)
 
                 ## Check which episodes have already been run
                 results = []
                 episode_kwargs = []
                 for ep in range(num_episodes):
-                    out_path = os.path.join(save_folder_per_ep, f"{ra_label}_ep{ep:04d}.npz")
+                    out_path = os.path.join(save_ep_dirpath, f"{ra_label}_ep{ep:04d}.npz")
                     if not overwrite and os.path.exists(out_path):
                         try:
                             results.append(load_summary_from_npz(out_path, results_label))
@@ -88,8 +89,8 @@ if __name__ == "__main__":
                         except Exception as e:
                             print(f"\tWarning: couldn't reuse cached episode {ep} ({out_path}): {e} -- re-running it.")
                     episode_kwargs.append(dict(episode=ep, ra_method=ra_method,
-                                               env_kwargs={"num_ue": int(num_ue)},
-                                               results_folder=save_folder_per_ep,
+                                               env_kwargs={"num_ue": int(num_ue), "env_folder": env_dirpath},
+                                               results_folder=save_ep_dirpath,
                                                gpu_guard=gpu_semaphore, verbose=verbose))
 
                 print(f"\t{len(results)}/{num_episodes} episodes already done, running {len(episode_kwargs)} more.")
