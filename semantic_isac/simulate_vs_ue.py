@@ -45,7 +45,7 @@ if __name__ == "__main__":
         free_gpus = None
 
     ### MAIN SIMULATION PARAMETERS ###
-    num_ue_vec = p.NUM_SLOTS * np.arange(1, 6)
+    num_ue_vec = np.array([6, 8, 16, 24, 36])
     num_episodes = 100
 
     # Cycling through methods
@@ -89,8 +89,8 @@ if __name__ == "__main__":
                         except Exception as e:
                             print(f"\tWarning: couldn't reuse cached episode {ep} ({out_path}): {e} -- re-running it.")
                     episode_kwargs.append(dict(episode=ep, ra_method=ra_method,
-                                               env_kwargs={"num_ue": int(num_ue), "env_folder": env_dirpath},
-                                               results_folder=save_ep_dirpath,
+                                               env_kwargs={"num_ue": int(num_ue), "env_dirpath": env_dirpath, "debugging": True},
+                                               metrics_dirpath=save_ep_dirpath,
                                                gpu_guard=gpu_semaphore, verbose=verbose))
 
                 print(f"\t{len(results)}/{num_episodes} episodes already done, running {len(episode_kwargs)} more.")

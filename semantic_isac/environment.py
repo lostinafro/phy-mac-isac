@@ -26,32 +26,35 @@ class SimulationEnvironment:
     save vehicle data3 to a CSV file, set up a simulation scene, and retrieve scene information and velocities.
 
     """
+    # TODO: passing c as an argument dumbdumb!
     def __init__(self, episode : int,
+                 num_ap : int = p.NUM_AP,
+                 num_ant_h : int = p.NUM_ANT,
+                 num_ant_v : int = 1,
+                 num_ue : int = p.NUM_UE,
                  num_scs: int = p.NUM_SCS,
                  num_sym: int = p.NUM_SYM,
                  num_slot: int = p.NUM_SLOTS,
                  num_frames: int = p.NUM_FRAMES,
                  numerology: int = p.NUMEROLOGY,
                  carrier_freq: float = p.CARRIER,
+                 ue_power: float = p.UE_POW,
+                 lo_ppm: float | np.ndarray = p.PPM_XO,
                  scene_name: str | None = None,
+                 scene_dirpath: str = p.SCENE_FOLDER,
                  area_coordinates: list | np.ndarray | None = None,
                  rt_parameters: dict | None = None,
                  num_regions : int = p.REGIONS,
                  boundaries: np.ndarray | None = None,
-                 num_ap : int = p.NUM_AP,
-                 num_ant_h : int = p.NUM_ANT, num_ant_v : int = 1,
-                 num_ue : int = p.NUM_UE,
-                 ue_power : float = p.UE_POW,
-                 lo_ppm: float | np.ndarray = p.PPM_XO,
                  debugging: bool = False,
-                 env_folder: str = p.ENV_FOLDER,
-                 scene_folder: str = p.SCENE_FOLDER,
-                 generate_channel: bool = False,
+                 load_env: bool = False,
+                 save_env: bool = False,
+                 env_dirpath: str = p.ENV_FOLDER,
                  ):
         r"""Initializes the simulation environment for a wireless communication scenario.
 
         This method sets up the core parameters for a wireless network simulation, including:
-        
+
         - The physical environment (area coordinates).
         - Access Points (APs) and their antenna arrays.
         - User Equipment (UEs) and their mobility (positions and velocities).
@@ -79,7 +82,7 @@ class SimulationEnvironment:
 
         :param num_ue: Number of User Equipment (UE) devices. Defaults to ``U``.
         :type num_ue: int, optional
-        
+
         :param num_scs: Number of subcarriers in the OFDM system. Defaults to 144.
         :type num_scs: int, optional
 
@@ -99,15 +102,13 @@ class SimulationEnvironment:
         phy.config.seed = self.episode                  # Configuring sionna.phy to use seed equal to episode no.
         self.debug = debugging                          # Boolean declaring debug session
         if self.debug:
+            # TODO: Fix the interactive figures
             self.channel_fig = None
             self.env_fig = None
 
-        # Useful folders
-        self.env_folder = env_folder
-        self.scene_folder = scene_folder
-
-        os.makedirs(self.env_folder, exist_ok=True)
-        os.makedirs(self.scene_folder, exist_ok=True)
+        # Folders
+        self.env_folder = env_dirpath
+        self.scene_folder = scene_dirpath
 
         # SHARED PARAMETERS
         # General constants (+1 in num_frames accounts for the initial state being frame 0)
@@ -163,13 +164,22 @@ class SimulationEnvironment:
         # Initialize metrics parameters
         self.metrics = p.Metrics(c=self.c)      # Metrics to be saved for performance evaluation
 
-        ## Before loading the module, check if the env for the episode has been already generated
+        # Save/Load environment eventually
+        self._save_env = save_env
+        if save_env:
+            os.makedirs(self.env_folder, exist_ok=True)
+
         self.env_filename = os.path.join(self.env_folder, f"ep{self.episode:04d}.npz")
-        data_check = (p.check_dataclass(self.env_filename, self.c, keys=list(sha_kwargs.keys())) and
-                      p.check_dataclass(self.env_filename, self.wireless, keys=list(wir_kwargs.keys())) and
-                      p.check_dataclass(self.env_filename, self.geo, keys=["area_coordinates"]))
-        if data_check and not generate_channel:
-            self._load_env = True
+        if load_env:
+            ## Before loading the env, check if the episode has been already generated
+            data_check = (p.check_dataclass(self.env_filename, self.c, keys=list(sha_kwargs.keys())) and
+                          p.check_dataclass(self.env_filename, self.wireless, keys=list(wir_kwargs.keys())) and
+                          p.check_dataclass(self.env_filename, self.geo, keys=["area_coordinates"]))
+            if data_check:
+                self._load_env = True
+            else:
+                print("Could not load environment, even if you ask. I am gonna generate a new one.")
+                self._load_env = False
         else:
             self._load_env = False
 
@@ -430,7 +440,7 @@ class SimulationEnvironment:
                             ue_slot_map=ue_slot_map,
                             )
         # Print errors
-        if self.debug and not (self.frame % 1):
+        if self.debug and not (self.frame % 10):
             # Visualize
             self.env_fig = self.show_environment(paths=paths)
             self.channel_fig = self.plot_channel(channel)
@@ -479,8 +489,9 @@ class SimulationEnvironment:
             print(f"Avg. total misclassification so far: {np.mean(self.metrics.misclassification[:self.frame + 1].sum(-1))}")
 
             print("----------------------- END FRAME ----------------------\n")
+            input("Press ENTER to continue...")
 
-        if (not self._load_env) and (self.frame == self.K - 1):    # Last frame
+        if self._save_env and (self.frame == self.K - 1):    # Last frame
             p.save_params_npz(self.env_filename, sha=self.c, geo=self.geo, wir=self.wireless)
             print(f"Environment saved into file: {self.env_filename}")
 
@@ -1019,17 +1030,14 @@ class SimulationEnvironment:
         return self.U * self.S * self.L * self.M * self.T * self.F / 1024 ** 2
 
 
-
-
-
 def run_episode(episode: int,
                 ra_method: type[ra.ResourceAllocationBase],
                 ra_kwargs: dict | None = None,
                 env_kwargs: dict | None = None,
                 step_kwargs: dict | None = None,
                 gpu_guard: threading.Semaphore | None = None,
-                save_results: bool = True,
-                results_folder: str = p.DATA_FOLDER,
+                save_metrics: bool = True,
+                metrics_dirpath: str = p.DATA_FOLDER,
                 verbose: bool = False) -> dict:
     """Run one full simulation episode: build the environment, wire up the modules, step
     through every frame, then save the whole run's Shared/Geometric/Estimation/Metrics
@@ -1048,8 +1056,8 @@ def run_episode(episode: int,
         (cto, cfo, sync).
 
     :param gpu_guard: threading.Semaphore, set to the GPU access to grant.
-    :param save_results: bool, if False, skip saving (useful for quick interactive runs).
-    :param results_folder: str, directory the output .npz is written to.
+    :param save_metrics: bool, if False, skip saving (useful for quick interactive runs).
+    :param metrics_dirpath: str, directory the output .npz is written to.
     :param verbose: bool, print a per-frame progress bar.
 
     :returns: dict, small scalar summary (mean over frames) of a few key metrics, plus the
@@ -1091,9 +1099,9 @@ def run_episode(episode: int,
             env.step(**step_kwargs)
 
         # --- Save the whole run: Estimation, and Metrics parameters ---
-        if save_results:
+        if save_metrics:
             ra_method_label = next(key for key, val in ra.available_methods.items() if val == ra_method)
-            filename = os.path.join(results_folder, f"{ra_method_label}_ep{episode:04d}.npz")
+            filename = os.path.join(metrics_dirpath, f"{ra_method_label}_ep{episode:04d}.npz")
             save_path = p.save_params_npz(filename, estimate=env.estimate, metrics=env.metrics)
 
         # --- Small scalar summary for quick cross-episode aggregation ---
@@ -1111,8 +1119,8 @@ if __name__ == "__main__":
     num_ue = 10
     env_folder = os.path.join(p.ENV_FOLDER, f"UE{num_ue:03d}")
 
-    env_args = {"debugging": True, "num_frames": 30, "num_ue": 10, "env_folder": env_folder}
+    env_args = {"debugging": True, "num_frames": 30, "num_ue": 10, "env_dirpath": env_folder}
     step_args = {"cfo": False}
     summary = run_episode(1, ra.SemanticRiskAllocation, gpu_guard=threading.Semaphore(1), env_kwargs=env_args, step_kwargs=step_args, verbose=False,
-                          results_folder=os.path.join(os.getcwd(), "data_test"))
+                          metrics_dirpath=os.path.join(os.getcwd(), "data_test"))
     print(summary)
