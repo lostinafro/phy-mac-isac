@@ -36,7 +36,7 @@ class SimulationEnvironment:
                  scene_name: str | None = None,
                  area_coordinates: list | np.ndarray | None = None,
                  rt_parameters: dict | None = None,
-                 num_regions : int = 2,
+                 num_regions : int = p.REGIONS,
                  boundaries: np.ndarray | None = None,
                  num_ap : int = p.NUM_AP,
                  num_ant_h : int = p.NUM_ANT, num_ant_v : int = 1,
@@ -246,8 +246,7 @@ class SimulationEnvironment:
         if self._load_env:
             with np.load(self.env_filename, allow_pickle=True) as data:
                 self.geo.update(np.arange(self.K + 1), **ut.filter_kwargs(self.geo, **data))
-                self.wireless.update(**ut.filter_kwargs(self.wireless, **data))
-                ap_array = None
+                self.wireless.update(np.arange(self.K), **ut.filter_kwargs(self.wireless, **data))
         else:
             # [λ] default half-wavelength spacing else whatever was input
             antenna_spacing = antenna_spacing or 1 / 2
@@ -325,6 +324,7 @@ class SimulationEnvironment:
         if not self._load_env:
             paths = self.path_solver(self.scene, seed=self.episode, **ut.filter_kwargs(self.path_solver, **self.c.rays))
             channel = self.compute_cfr(paths, cfo_base, cto_base)   # [L, M, U, S, T, F]
+            self.wireless.update(self.frame, channel=channel)
         else: # The environment is loaded from a file
             paths = None
             channel = self.wireless.channel[self.frame]
@@ -420,6 +420,7 @@ class SimulationEnvironment:
                             sinr=sinr_eff.mean(axis=-1)[slot_idx, ue_idx],
                             se_set=se_per_scheduled_ue,
                             se_achievable=se_achievable,
+                            se_oracle=oracle_se[ue_slot_map],
                             efim_oracle=oracle_efim,
                             efim_predicted=predicted_efim,
                             misclassification=self.geo.ue_region[self.frame] != self.estimate.ue_region_hat[self.frame],
@@ -436,22 +437,26 @@ class SimulationEnvironment:
             self.env_fig.show()
             self.channel_fig.show()
 
+            # Print starts
+            print(f"----------------------- FRAME {self.frame} ----------------------")
+
             # UE movement
             for u in range(min(10, self.U)):
                 print(f"UE {u}: old_pos={self.geo.ue_location[self.frame - 1, u]}, new_pos={new_pos[u]}, new_vel={new_vel[u]}")
+
+            print(f"Allocated UEs are: {ue_idx}")
 
             # Test quasi-constant beta
             beta_full = np.abs(channel) ** 2
             mask = np.nonzero(np.any(np.abs(beta_full - beta[:, np.newaxis, :, :, np.newaxis, np.newaxis]) > 1e-6, axis=(1, 4, 5)))
             if len(mask[0]) > 0:
                 for idx in range(len(mask[0])):
-                    print(f"Not quadi-constant beta for AP {mask[0][idx]}, UE {mask[1][idx]} and slot {mask[2][idx]}")
+                    print(f"Not quasi-constant beta for AP {mask[0][idx]}, UE {mask[1][idx]} and slot {mask[2][idx]}")
 
             # Compute absolute and relative error between RadioMap and RayTracer as metrics
             beta_gt = beta.mean(axis=-1)
             beta_rm = self.estimate_gain_dl(self.geo.ue_location[self.frame])
-            print(f"Absolute RM error is: {beta_rm - beta_gt} [dB]")
-            print(f"Relative EM error is: {(beta_rm - beta_gt) / beta_gt * 100} %")
+            print(f"Avg. relative RM error is: {np.mean((beta_rm - beta_gt) / beta_gt * 100)} %")
 
             # Check issues in the oracle if any
             unachievable_err = np.nonzero(se_achievable < oracle_se[slot_idx, ue_idx])[0]
@@ -461,14 +466,19 @@ class SimulationEnvironment:
                 print(f"Achievable oracle rate for all UEs")
 
             # Queue statuts
-            queue_exceeded = np.nonzero(queue > self.wireless.queue_max)
+            queue_exceeded = np.nonzero(queue > self.wireless.queue_max)[0]
             if len(queue_exceeded) > 0:
                 print(f"Queue exceeded for UE {queue_exceeded}")
             else:
                 print(f"Queue within limits for all UEs")
 
             # Semantic errors
-            print(f"The current region error is: {self.geo.ue_region[self.frame] == self.estimate.ue_region_hat[self.frame]}")
+            print(f"The total semantic risk predicted was: {self.metrics.risk_predicted[self.frame].sum(-1)}")
+            print(f"The semantic risk approx was: {self.metrics.risk_hat[self.frame]}")
+            print(f"The measured region error is: {self.metrics.misclassification[self.frame]}")
+            print(f"Avg. total misclassification so far: {np.mean(self.metrics.misclassification[:self.frame + 1].sum(-1))}")
+
+            print("----------------------- END FRAME ----------------------\n")
 
         if (not self._load_env) and (self.frame == self.K - 1):    # Last frame
             p.save_params_npz(self.env_filename, sha=self.c, geo=self.geo, wir=self.wireless)
@@ -1100,8 +1110,9 @@ def run_episode(episode: int,
 if __name__ == "__main__":
     num_ue = 10
     env_folder = os.path.join(p.ENV_FOLDER, f"UE{num_ue:03d}")
-    env_args = {"debugging": False, "num_frames": 5, "num_ue": 10, "env_folder": env_folder}
+
+    env_args = {"debugging": True, "num_frames": 30, "num_ue": 10, "env_folder": env_folder}
     step_args = {"cfo": False}
-    summary = run_episode(1, ra.SemanticRiskAllocation, gpu_guard=threading.Semaphore(1), env_kwargs=env_args, step_kwargs=step_args, verbose=True,
+    summary = run_episode(1, ra.SemanticRiskAllocation, gpu_guard=threading.Semaphore(1), env_kwargs=env_args, step_kwargs=step_args, verbose=False,
                           results_folder=os.path.join(os.getcwd(), "data_test"))
     print(summary)

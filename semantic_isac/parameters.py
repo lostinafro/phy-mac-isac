@@ -4,6 +4,8 @@ import rtree
 from scipy.spatial.transform import Rotation
 from scipy.constants import speed_of_light
 import scipy.stats as stats
+from shapely import Polygon
+
 import utils as ut
 import shapely as sha
 import matplotlib as mpl
@@ -19,8 +21,8 @@ NUM_ANT = 4
 NUM_UE = 40
 NUM_EP = int(1e3)
 ROOM_SIDE = 50             # [m]
-VEL_STD = 2                 # [m/s]
-REGIONS = 2
+VEL_STD = 4                 # [m/s]
+REGIONS = 8
 UE_HEIGHT = 1.5             # [m]
 
 # Wireless
@@ -33,7 +35,7 @@ NUM_FRAMES = 100
 PPM_XO = 5 / 50                # Residual PPM after initial synchronization from PRACH
 PPM_OCXO = 0.5 / 50            # Residual PPM after initial synchronization
 DATASIZE_AVG = 2048
-QUEUE_MAX = int(2 * DATASIZE_AVG)
+QUEUE_MAX = int(4 * DATASIZE_AVG)
 QUEUE_RELIABILITY = 0.95         # 1 - epsilon in the paper
 UE_POW = ut.dbm2watt(10)
 
@@ -242,7 +244,7 @@ class WirelessParams:
 
         # Compute datasize and queue
         if self.avg_datasize is None:
-            self.avg_datasize = DATASIZE_AVG * np.ones(self.c.num_ue)
+            self.avg_datasize = DATASIZE_AVG * np.ones(self.c.num_ue, dtype=int)
         if self.queue_max is None:
             self.queue_max = QUEUE_MAX * np.ones(self.c.num_ue, dtype=np.int32)
         if self.queue_reliability is None:
@@ -252,10 +254,20 @@ class WirelessParams:
         self.channel = np.zeros((self.c.num_frames, self.c.num_ap, self.c.num_ant, self.c.num_ue,
                                  self.c.num_slots, self.c.num_sym, self.c.num_scs), dtype=np.complex64)
 
-    def update(self, **kwargs):
+    def update(self, frame: int | np.ndarray = 0, **kwargs):
         """Update wireless parameters with new values."""
         for key, value in kwargs.items():
             if hasattr(self, key):
+                if key == "traffic_pdf":
+                    if isinstance(value, np.ndarray):
+                        value = value.item()
+                    # Take the right generator
+                    value = getattr(stats, value)
+                    setattr(self, key, value)
+                elif key == "channel":
+                    attr = getattr(self, key)
+                    attr[frame] = value
+                else:
                     setattr(self, key, value)
             else:
                 raise AttributeError(f"WirelessParams has no attribute '{key}'")
@@ -426,6 +438,10 @@ class GeometryParams:
                         setattr(self, key, sha.from_wkt(value))
                     if key == "semantic_regions":
                         self.regions_idx = ut.build_spatial_index(self.semantic_regions)
+                elif key == "ap_orientation":
+                    if isinstance(value, np.ndarray):
+                        value = Rotation.from_quat(value)
+                    setattr(self, key, value)
                 else:
                     setattr(self, key, value)
             else:
@@ -637,6 +653,7 @@ class Metrics:
     sinr: np.ndarray = field(default=None, init=False)
     se_set: np.ndarray = field(default=None, init=False)
     se_achievable: np.ndarray = field(default=None, init=False)
+    se_oracle: np.ndarray = field(default=None, init=False)
     # ber: np.ndarray = field(default=None, init=False)
     # latency: np.ndarray = field(default=None, init=False)
     # packet_loss_rate: np.ndarray  = field(default=None, init=False)
@@ -663,6 +680,7 @@ class Metrics:
         self.delta_queue = np.zeros((self.c.num_frames + 1, self.c.num_ue), dtype=np.int32)
         self.se_achievable = np.nan * np.zeros((self.c.num_frames + 1, self.c.num_ue))
         self.se_set = np.nan * np.zeros((self.c.num_frames + 1, self.c.num_ue))
+        self.se_oracle = np.nan * np.zeros((self.c.num_frames + 1, self.c.num_ue))
         self.sinr = np.nan * np.zeros((self.c.num_frames + 1, self.c.num_ue))
         self.efim_oracle = np.zeros((self.c.num_frames + 1, self.c.num_slots, self.c.num_ue, 3, 3))
         self.efim_predicted = np.zeros((self.c.num_frames + 1, self.c.num_slots, self.c.num_ue, 3, 3))
@@ -681,7 +699,7 @@ class Metrics:
                 # Get the attribute
                 attr = getattr(self, key)
                 # If value has not the correct shape, numpy will raise IndexError
-                if key in ["se_achievable", "se_set", "sinr"]:
+                if key in ["se_achievable", "se_set", "se_oracle", "sinr"]:
                     attr[frame, idx] = value
                 elif isinstance(attr, np.ndarray):
                     attr[frame] = value
@@ -737,8 +755,7 @@ def save_params_npz(filepath: str, **dataclass_instances) -> str:
       - a field that's a *reference to another one of the passed dataclass instances*
         (e.g. GeometryParams.c, EstimationParams.geo) is skipped -- avoids saving the
         same data twice; pass every dataclass you want saved explicitly.
-      - genuinely unserializable live objects (rt.PlanarArray, rtree.index.Index, a live
-        np.random.Generator) are skipped.
+      - genuinely unserializable live objects (rtree.index.Index, np.random.Generator) are skipped.
 
     :param filepath: str, output path (".npz" appended automatically if missing).
     :param dataclass_instances: dataclasses passed as name=instance, e.g.
@@ -762,9 +779,11 @@ def save_params_npz(filepath: str, **dataclass_instances) -> str:
                 continue
             if isinstance(value, Rotation):
                 flat[key] = value.as_quat()
+            elif isinstance(value, stats.rv_continuous):
+                flat[key] = value.name
             elif isinstance(value, (sha.geometry.Polygon, sha.geometry.MultiPolygon)):
                 flat[key] = np.array(value.wkt)
-            elif isinstance(value, (rt.PlanarArray, rtree.index.Index, np.random.Generator)):
+            elif isinstance(value, (rtree.index.Index, np.random.Generator)):
                 # print(f"save_params_npz: skipping non-serializable field '{key}' ({type(value).__name__}).")
                 continue
             elif isinstance(value, dict):
