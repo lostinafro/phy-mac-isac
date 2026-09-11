@@ -440,7 +440,10 @@ class SimulationEnvironment:
                             ue_slot_map=ue_slot_map,
                             )
         # Print errors
-        if self.debug and not (self.frame % 10):
+        every = 10
+        if self.debug and not (self.frame % every):
+            if self.frame == 0:
+                every = 0
             # Visualize
             self.env_fig = self.show_environment(paths=paths)
             self.channel_fig = self.plot_channel(channel)
@@ -483,9 +486,9 @@ class SimulationEnvironment:
                 print(f"Queue within limits for all UEs")
 
             # Semantic errors
-            print(f"The total semantic risk predicted was: {self.metrics.risk_predicted[self.frame].sum(-1)}")
+            print(f"Per UE semantic risk predicted was: {self.metrics.risk_predicted[self.frame - every:self.frame + 1].sum(-1)}")
             print(f"The semantic risk approx was: {self.metrics.risk_hat[self.frame]}")
-            print(f"The measured region error is: {self.metrics.misclassification[self.frame]}")
+            print(f"UEs misclassified are: {self.metrics.misclassification[self.frame]}")
             print(f"Avg. total misclassification so far: {np.mean(self.metrics.misclassification[:self.frame + 1].sum(-1))}")
 
             print("----------------------- END FRAME ----------------------\n")
@@ -1102,7 +1105,10 @@ def run_episode(episode: int,
         if save_metrics:
             ra_method_label = next(key for key, val in ra.available_methods.items() if val == ra_method)
             filename = os.path.join(metrics_dirpath, f"{ra_method_label}_ep{episode:04d}.npz")
-            save_path = p.save_params_npz(filename, estimate=env.estimate, metrics=env.metrics)
+            # remove channel from wireless
+            env.wireless.channel = None
+            save_path = p.save_params_npz(filename, c=env.c, wireless=env.wireless, geo=env.geo,
+                                          estimate=env.estimate, metrics=env.metrics)
 
         # --- Small scalar summary for quick cross-episode aggregation ---
         summary = {
@@ -1119,7 +1125,7 @@ if __name__ == "__main__":
     num_ue = 10
     env_folder = os.path.join(p.ENV_FOLDER, f"UE{num_ue:03d}")
 
-    env_args = {"debugging": True, "num_frames": 30, "num_ue": 10, "env_dirpath": env_folder}
+    env_args = {"debugging": False, "num_frames": 30, "num_ue": 6, "env_dirpath": env_folder}
     step_args = {"cfo": False}
     summary = run_episode(1, ra.SemanticRiskAllocation, gpu_guard=threading.Semaphore(1), env_kwargs=env_args, step_kwargs=step_args, verbose=False,
                           metrics_dirpath=os.path.join(os.getcwd(), "data_test"))

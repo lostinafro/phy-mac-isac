@@ -89,7 +89,7 @@ if __name__ == "__main__":
                         except Exception as e:
                             print(f"\tWarning: couldn't reuse cached episode {ep} ({out_path}): {e} -- re-running it.")
                     episode_kwargs.append(dict(episode=ep, ra_method=ra_method,
-                                               env_kwargs={"num_ue": int(num_ue), "env_dirpath": env_dirpath, "debugging": True},
+                                               env_kwargs={"num_ue": int(num_ue), "env_dirpath": env_dirpath, "debugging": False},
                                                metrics_dirpath=save_ep_dirpath,
                                                gpu_guard=gpu_semaphore, verbose=verbose))
 
