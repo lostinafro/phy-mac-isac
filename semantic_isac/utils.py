@@ -1,7 +1,6 @@
 # filename "utils.py"
 # Global methods: contains general methods used everywhere
 import os
-import multiprocessing
 import GPUtil
 from datetime import date
 import colorsys
@@ -9,7 +8,6 @@ import matplotlib.colors as mcolors
 import matplotlib.pyplot as plt
 from matplotlib import rc
 from scipy.spatial import ConvexHull, Voronoi
-from scipy.spatial.transform import Rotation
 from scipy.constants import k, speed_of_light
 from scipy.stats import rice, norm
 from scipy.special import erf
@@ -23,8 +21,8 @@ import trimesh
 import shapely as sha
 from shapely.geometry import Polygon, Point, MultiPolygon
 import shapely.ops as shops
-import dataclasses
 from rtree import index
+import dataclasses
 import inspect
 
 # TODO: Maybe split this in multiple files?
@@ -99,22 +97,22 @@ def qfun(input):
     """Compute the Gaussian Q-function"""
     return 0.5 - 0.5 * erf(input / np.sqrt(2))
 
-def filter_kwargs(method, **kwargs):
-    """Filter kwargs passed to method based on the supported one.
-     when collecting all parameters into a dictionary.
+def filter_kwargs(obj, **kwargs) -> dict:
+    """Filter kwargs down to only those a callable, class, or dataclass (instance or
+    class) actually accepts -- for collecting parameters from a larger kwargs blob into
+    just what a specific target needs.
 
-     :param method: Method to call.
-     :returns: filtered dictionary.
-     """
-    # Get the signature of the method
-    sig = inspect.signature(method)
+    :param obj: a function/method, a plain class, or a dataclass (class or instance).
+        For a dataclass, all fields are considered (e.g. `field(init=False)` are included)
+    :returns: dict, the subset of kwargs whose keys `method` supports.
+    """
+    if dataclasses.is_dataclass(obj):
+        supported_params = {f.name for f in dataclasses.fields(obj)}
+    else:
+        sig = inspect.signature(obj)
+        supported_params = sig.parameters.keys()
 
-    # Get the parameter names that the method accepts
-    supported_params = sig.parameters.keys()
-
-    # Filter parameters
-    filtered_kwargs = {k: v for k, v in kwargs.items() if k in supported_params}
-    return filtered_kwargs
+    return {k: v for k, v in kwargs.items() if k in supported_params}
 
 
 # Random variables
@@ -185,13 +183,6 @@ def move_ues(ue_pos,
 
 def std_bar(total_iteration):
     return tqdm(total_iteration, file=sys.stdout, leave=False, ncols=60, ascii=True)
-
-def latex_look(plt):
-    # Set LaTeX as the default text interpreter
-    plt.rcParams['text.usetex'] = True
-    plt.rcParams['font.family'] = 'serif'
-    plt.rcParams['font.serif'] = ['Computer Modern Roman']  # LaTeX default font
-
 
 def check_data(data_shape: tuple, prefix: str, folder: str, overwrite_flag: bool = False):
     filename = os.path.join(folder, prefix + '.csv')
@@ -567,6 +558,11 @@ def which_region(points: np.ndarray, multi_polygon: Polygon | MultiPolygon,
     if rtree_idx is None:
         rtree_idx = build_spatial_index(multi_polygon)
 
+    # Flatten point if it is a tensor
+    shape = points.shape
+    if len(shape) > 2:
+        points = points.reshape(-1, shape[-1])
+
     # Convert points to Shapely Point objects (ignore z-coordinate)
     shapely_points = [sha.Point(p) for p in points]
 
@@ -578,6 +574,8 @@ def which_region(points: np.ndarray, multi_polygon: Polygon | MultiPolygon,
         for j in rtree_idx.intersection((point.x, point.y, point.x, point.y)):
             if multi_polygon.geoms[j].contains(point):
                 result[i] = np.int32(j)
+    if len(shape) > 2:
+        result = result.reshape(shape[:-1])
     return result
 
 
@@ -797,61 +795,6 @@ def printplot(fig: plt.Figure = None,
             fig.savefig(filename + '.jpg', dpi=300, bbox_inches='tight')
 
 
-# Save data
-def save_params_npz(filepath: str, **dataclass_instances) -> str:
-    """Flatten one or more dataclass instances (SharedParams, GeometryParams, EstimationParams,
-    Metrics, ...) into a single compressed .npz archive, one array per field, keyed as
-    "<name>_<field>" (name = the kwarg you passed it under). np.load() on a .npz is lazy
-    per-key, so a later CSV-of-a-subset only needs to touch the keys it actually wants,
-    not the whole archive.
-
-    Field-conversion rules:
-      - scipy Rotation -> quaternion array (`.as_quat()`)
-      - shapely Polygon/MultiPolygon -> WKT string
-      - dict -> stored as a 0-d object array (allow_pickle)
-      - a field that's a *reference to another one of the passed dataclass instances*
-        (e.g. GeometryParams.c, EstimationParams.geo) is skipped -- avoids saving the
-        same data twice; pass every dataclass you want saved explicitly.
-      - genuinely unserializable live objects (rt.PlanarArray, rtree.index.Index, a live
-        np.random.Generator) are skipped.
-
-    :param filepath: str, output path (".npz" appended automatically if missing).
-    :param dataclass_instances: dataclasses passed as name=instance, e.g.
-        save_params_npz(path, shared=env.c, geo=env.geo, estimate=env.estimate, metrics=env.metrics)
-
-    :returns: str, the actual path written (with ".npz" ensured).
-    """
-    instance_ids = {id(v) for v in dataclass_instances.values()}
-    flat = {}
-
-    for group_name, obj in dataclass_instances.items():
-        for f in dataclasses.fields(obj):
-            value = getattr(obj, f.name)
-            key = f"{f.name}"
-
-            if id(value) in instance_ids:
-                continue  # back-reference to another saved dataclass -- skip, avoid duplication
-            if value is None:
-                continue
-            if isinstance(value, Rotation):
-                flat[key] = value.as_quat()
-            elif isinstance(value, (sha.geometry.Polygon, sha.geometry.MultiPolygon)):
-                flat[key] = np.array(value.wkt)
-            elif isinstance(value, (rt.PlanarArray, index.Index, np.random.Generator)):
-                # print(f"save_params_npz: skipping non-serializable field '{key}' ({type(value).__name__}).")
-                continue
-            elif isinstance(value, dict):
-                flat[key] = np.array(value, dtype=object)
-            else:
-                flat[key] = np.asarray(value)
-
-    if not filepath.endswith(".npz"):
-        filepath += ".npz"
-    os.makedirs(os.path.dirname(filepath), exist_ok=True)
-    np.savez_compressed(filepath, **flat)
-    return filepath
-
-
 # Progress bars
 def std_progressbar(total_iteration, **kwargs):
     return tqdm(total_iteration, file=sys.stdout, leave=False, ncols=60, ascii=True, **kwargs)
@@ -879,7 +822,8 @@ uppath = lambda _path, n: os.sep.join(_path.split(os.sep)[:-n])
 
 def get_processing_resources(num_scripts: int,
                              on_gpu: bool, num_ue: int = 1, mib_vram_per_ue: int | float = 200,
-                             mib_vram_baseline: int = 210):
+                             mib_vram_baseline: int = 210,
+                             usable_gpu_ids: list[int] | None = None):
     """Estimate the number of CPU workers, threads per worker, and GPU semaphore value based on the number of scripts,
     episodes, and GPU availability.
     It considers a mib_vram_per_ue = 200 if not specified otherwise.
@@ -893,12 +837,34 @@ def get_processing_resources(num_scripts: int,
 
     cpu_slots = int(max(1, (os.cpu_count() // 2)  // num_scripts))
     if on_gpu:
-        gpus = GPUtil.getGPUs()
+        gpus = [g for g in GPUtil.getGPUs() if usable_gpu_ids is None or g.id in usable_gpu_ids]
         free_vram_mib = int(np.sum([gpu.memoryFree for gpu in gpus]))
         vram_per_episode = mib_vram_baseline + mib_vram_per_ue * num_ue
         gpu_slots = int(max(1, free_vram_mib / vram_per_episode / num_scripts))
     else:
         gpu_slots = 0
-        os.environ["CUDA_VISIBLE_DEVICES"] = ""
 
     return cpu_slots, gpu_slots
+
+
+def select_available_gpus(max_utilization_pct: float = 10.0,
+                           max_others_mem_mib: float = 1500.0) -> list[int]:
+    """Identify which GPUs on this machine are effectively idle (not meaningfully used by
+    other users' processes), so a shared-cluster run only considers those for its own budget.
+
+    :param max_utilization_pct: float, skip a GPU if its compute utilization is above this
+        (e.g. someone else is actively running something on it).
+    :param max_others_mem_mib: float, skip a GPU if more than this much VRAM is already
+        occupied (by anyone) -- catches GPUs that are memory-reserved but momentarily idle.
+
+    :returns: list[int], physical GPU indices considered free to use. Empty list if none
+        qualify (caller should fall back to CPU-only in that case).
+    """
+    gpus = GPUtil.getGPUs()
+    available = []
+    for gpu in gpus:
+        if gpu.load * 100 <= max_utilization_pct and gpu.memoryUsed <= max_others_mem_mib:
+            available.append(gpu.id)
+        else:
+            print(f"GPU {gpu.id} busy (util={gpu.load*100:.0f}%, used={gpu.memoryUsed:.0f} MiB) -- excluding.")
+    return available

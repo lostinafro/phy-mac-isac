@@ -1,5 +1,3 @@
-from argparse import ArgumentTypeError
-
 import utils as ut
 import parameters as p
 import numpy as np
@@ -246,7 +244,7 @@ class RoundRobinAllocation(ResourceAllocationBase):
         :returns: np.ndarray[bool], ue-slot-association mask.
         """
         if frame < 0:
-            raise ArgumentTypeError("Frame index cannot be negative.")
+            raise ValueError("Frame index cannot be negative.")
         # prior = self.estimate.ue_pos_hat[frame]
         return self.slot_ue_association_mask()
 
@@ -304,7 +302,7 @@ class SemanticRiskAllocation(ResourceAllocationBase):
         :returns: np.ndarray[bool], ue-slot-association mask.
         """
         if frame < 0:
-            raise ArgumentTypeError("Frame index cannot be negative.")
+            raise ValueError("Frame index cannot be negative.")
 
         self.risk0, self.risk1, self.delta_risk = self.eval_semantic_risk(frame, **ut.filter_kwargs(self.eval_semantic_risk, **kwargs))
         self.delta_queue, self.forced = self.eval_comm_risk(**ut.filter_kwargs(self.eval_comm_risk, **kwargs))
@@ -363,7 +361,7 @@ class PebBasedAllocation(ResourceAllocationBase):
         :returns: np.ndarray[bool], ue-slot-association mask.
         """
         if frame < 0:
-            raise ArgumentTypeError("Frame index cannot be negative.")
+            raise ValueError("Frame index cannot be negative.")
 
         self.risk0, self.risk1, self.delta_risk = eval_speb(**ut.filter_kwargs(eval_speb, **kwargs))
         self.delta_queue, self.forced = self.eval_comm_risk(**ut.filter_kwargs(self.eval_comm_risk, **kwargs))
@@ -410,10 +408,56 @@ class SemanticRiskAllocationNoComm(ResourceAllocationBase):
         :returns: np.ndarray[bool], ue-slot-association mask.
         """
         if frame < 0:
-            raise ArgumentTypeError("Frame index cannot be negative.")
+            raise ValueError("Frame index cannot be negative.")
 
         self.risk0, self.risk1, self.delta_risk = self.eval_semantic_risk(frame, **ut.filter_kwargs(self.eval_semantic_risk, **kwargs))
         return self.slot_ue_association_mask()
+
+
+class PebBasedAllocationNoComm(ResourceAllocationBase):
+    """PEB-based OFDM allocation only localization.
+
+    Builds the sionna.phy `ResourceGrid` (time/frequency resource description),  a
+    `StreamManagement` (rx/tx stream association).
+    Moreover, it creates boolean np.ndarrays for `slot-ue allocation mask` and `ue-ap allocation masks`.
+    This base class gives the simplest possible grid. Subclass this for other allocation strategies.
+
+    :param c: SharedParams, shared scenario parameters (num_ue, num_ap, num_sym, num_scs, ...).
+    :param wireless: WirelessParams, OFDM numerology parameters (sc_spacing, cp_time, ...).
+    :param geo: GeometryParams, geometric configuration (not used by the base allocation, but
+        available for subclasses that allocate resources based on UE position/region).
+    :param estimate: EstimationParams, current position/region estimates (same rationale as `geo`).
+    """
+    def __init__(self, c: p.SharedParams, wireless: p.WirelessParams,
+                 geo: p.GeometryParams, estimate: p.EstimationParams):
+        super().__init__(c, wireless, geo, estimate)
+
+    def slot_ue_association_mask(self) -> np.ndarray:
+        """Orthogonal slot allocation based on predicted semantic risk and predicted SE.
+
+        :returns: np.ndarray[bool], shape (S, U), True where UE u is allocated to slot s, else False.
+        """
+        # General mask
+        mask = np.zeros((self.c.num_slots, self.c.num_ue), dtype=bool)
+        # Order UEs by delta_risk (descending)
+        order = np.argsort(self.delta_risk, descending=True)
+        # Take slot indexing of available slots (cap to the no. of UEs)
+        num_slots = min(self.c.num_slots, self.c.num_ue)
+        # Schedule the nodes
+        mask[np.arange(num_slots), order[:num_slots]] = True
+        return mask
+
+    def __call__(self, frame: int, **kwargs) -> np.ndarray:
+        """Call the association for the current frame.
+
+        :returns: np.ndarray[bool], ue-slot-association mask.
+        """
+        if frame < 0:
+            raise ValueError("Frame index cannot be negative.")
+
+        self.risk0, self.risk1, self.delta_risk = eval_speb(**ut.filter_kwargs(eval_speb, **kwargs))
+        return self.slot_ue_association_mask()
+
 
 
 class QueueBasedAllocation(ResourceAllocationBase):
@@ -458,7 +502,7 @@ class QueueBasedAllocation(ResourceAllocationBase):
         :returns: np.ndarray[bool], ue-slot-association mask.
         """
         if frame < 0:
-            raise ArgumentTypeError("Frame index cannot be negative.")
+            raise ValueError("Frame index cannot be negative.")
 
         self.delta_queue, _ = self.eval_comm_risk(**ut.filter_kwargs(self.eval_comm_risk, **kwargs))
         return self.slot_ue_association_mask()
@@ -470,4 +514,5 @@ available_methods = {"MAF": RoundRobinAllocation,
                      "SRL": SemanticRiskAllocationNoComm,
                      "PBI": PebBasedAllocation,
                      "QBC": QueueBasedAllocation,
+                     "PBL": PebBasedAllocationNoComm,
                      }

@@ -1,9 +1,9 @@
 import numpy as np
-from dataclasses import dataclass, field, asdict
+from dataclasses import dataclass, field, fields, asdict, make_dataclass
 import rtree
 from scipy.spatial.transform import Rotation
 from scipy.constants import speed_of_light
-import scipy.stats as sta
+import scipy.stats as stats
 import utils as ut
 import shapely as sha
 import matplotlib as mpl
@@ -11,16 +11,14 @@ import matplotlib.pyplot as plt
 import sionna.rt as rt
 import os
 from argparse import ArgumentParser
-import torch
-import mitsuba as mi
 
 ## DEFAULT PARAMETERS
 # Scenario
 NUM_AP = 4
 NUM_ANT = 4
 NUM_UE = 40
-NUM_EP = int(1e4)
-ROOM_SIDE = 200             # [m]
+NUM_EP = int(1e3)
+ROOM_SIDE = 50             # [m]
 VEL_STD = 2                 # [m/s]
 REGIONS = 2
 UE_HEIGHT = 1.5             # [m]
@@ -35,7 +33,7 @@ NUM_FRAMES = 100
 PPM_XO = 5 / 50                # Residual PPM after initial synchronization from PRACH
 PPM_OCXO = 0.5 / 50            # Residual PPM after initial synchronization
 DATASIZE_AVG = 2048
-QUEUE_MAX = int(10 * 2 ** 10)
+QUEUE_MAX = int(2 * DATASIZE_AVG)
 QUEUE_RELIABILITY = 0.95         # 1 - epsilon in the paper
 UE_POW = ut.dbm2watt(10)
 
@@ -44,7 +42,7 @@ FIGURE_FOLDER = os.path.join(os.getcwd(), "figs")
 DATA_FOLDER = os.path.join(os.getcwd(), "data")
 SCENE_FOLDER = os.path.join(os.getcwd(), "scenes")
 MESH_FOLDER = os.path.join(SCENE_FOLDER, "meshes")
-CHANNEL_FOLDER = os.path.join(os.getcwd(), "channels")
+ENV_FOLDER = os.path.join(os.getcwd(), "envs")
 
 # RayTracer and RadioMap parameters
 RT_PARAM = {
@@ -57,7 +55,7 @@ RT_PARAM = {
     "edge_diffraction": False,
     "synthetic_array": False,
     "samples_per_tx": int(1e8),
-    "cell_size": mi.Point2f((2., 2.)),
+    "cell_size": (1., 1.),
 }
 
 scattering_coefficient_dict = {
@@ -83,17 +81,17 @@ scattering_pattern_dict = {
 def common_parser():
     parser = ArgumentParser(description="Common parser to run simulations.")
 
-    parser.add_argument("--ra_method", type=str, default="MAF", help="Method to use for RA simulation")
+    parser.add_argument("--ra_method", type=str, default="", help="Method to use for RA simulation")
     parser.add_argument('--parallel', action='store_true', help="Enable parallel processing")
     parser.add_argument('--savedir', type=str, default=DATA_FOLDER, help="Optional path to save results in")
-    parser.add_argument('--debug', action='store_true', help="Enable debug mode")
+    parser.add_argument('--verbose', action='store_true', help="Verbose outputs")
     parser.add_argument("--overwrite", action='store_true', help="Overwrite results eve if already present in the savedir")
     parser.add_argument("--concurrent", type=int, default=1, help="Set the number of concurrent scripts run")
     parser.add_argument("--gpu", action='store_true', help="Set the GPU usage")
 
     args = parser.parse_args()
 
-    return args.ra_method, args.parallel, args.savedir, args.debug, args.overwrite, args.concurrent, args.gpu
+    return args.ra_method, args.parallel, args.savedir, args.verbose, args.overwrite, args.concurrent, args.gpu
 
 ## CLASSES
 @dataclass
@@ -152,7 +150,6 @@ class WirelessParams:
     :ivar slot_time: Duration of a slot in seconds, computed as 1e-3 / 2^μ.
     :ivar sym_time: Duration of an OFDM symbol in seconds (useful symbol time 1/sc_spacing plus cp_time).
     :ivar frame_time: Duration of a frame in seconds (includes DL/UL signaling overhead).
-    :ivar comm_times: Starting times of communication blocks in a frame (shape: (K*S,)).
     :ivar sc_spacing: Subcarrier spacing in Hz (15e3 * 2^μ).
     :ivar rb_spacing: Resource block (RB) spacing in Hz (12 * sc_spacing).
     :ivar sc_index: Subcarrier indices centered on the carrier (shape: (F,)).
@@ -168,10 +165,10 @@ class WirelessParams:
     numerology: int
     carrier: float
     lo_ppm: float | np.ndarray = 0.
-    ue_power: np.ndarray = None
-    ap_power: np.ndarray = None
+    ue_power: float | np.ndarray = None
+    ap_power: float | np.ndarray = None
     avg_datasize : np.ndarray = None
-    traffic_pdf: sta.rv_continuous = sta.expon
+    traffic_pdf: stats.rv_continuous = stats.expon
     # Performance guarantees
     queue_reliability: float = None
     queue_max: np.ndarray = None
@@ -181,7 +178,6 @@ class WirelessParams:
     sym_time: float = field(init=False)
     slot_time: float = field(init=False)
     frame_time: float = field(init=False)
-    comm_times: np.ndarray = field(init=False)
     sc_spacing: float = field(init=False)
     rb_spacing: float = field(init=False)
     sc_index: np.ndarray = field(init=False)
@@ -193,6 +189,7 @@ class WirelessParams:
     nob_ue: float = field(init=False)
     cfo_base: np.ndarray = field(init=False)
     cto_base: np.ndarray = field(init=False)
+    channel: np.ndarray = field(init=False)
 
     def __post_init__(self):
         """Compute derived attributes after initialization."""
@@ -222,11 +219,22 @@ class WirelessParams:
         # Compute bandwidth
         self.bw = self.sc_spacing * self.c.num_scs
 
+        # Check LO_PPM
+        if isinstance(self.lo_ppm, float):
+            self.lo_ppm = np.ones(self.c.num_ue) * self.lo_ppm
+        # Set CTO and CFO at zero at first
+        self.cfo_base = np.zeros(self.c.num_ue)
+        self.cto_base = np.zeros(self.c.num_ue)
+
         # Compute power
         if self.ue_power is None:
             self.ue_power = np.ones(self.c.num_ue) * ut.dbm2watt(10)
+        elif isinstance(self.ue_power, float):
+            self.ue_power = np.ones(self.c.num_ue) * self.ue_power
         if self.ap_power is None:
             self.ap_power = np.ones(self.c.num_ap) * ut.dbm2watt(30)
+        elif isinstance(self.ap_power, float):
+            self.ap_power = np.ones(self.c.num_ap) * self.ap_power
 
         # Compute thermal noise
         self.nob_ap = ut.thermal_noise(self.bw, noise_figure=3.0)
@@ -239,6 +247,18 @@ class WirelessParams:
             self.queue_max = QUEUE_MAX * np.ones(self.c.num_ue, dtype=np.int32)
         if self.queue_reliability is None:
             self.queue_reliability = QUEUE_RELIABILITY * np.ones(self.c.num_ue)
+
+        # Initialize channel
+        self.channel = np.zeros((self.c.num_frames, self.c.num_ap, self.c.num_ant, self.c.num_ue,
+                                 self.c.num_slots, self.c.num_sym, self.c.num_scs), dtype=np.complex64)
+
+    def update(self, **kwargs):
+        """Update wireless parameters with new values."""
+        for key, value in kwargs.items():
+            if hasattr(self, key):
+                    setattr(self, key, value)
+            else:
+                raise AttributeError(f"WirelessParams has no attribute '{key}'")
 
     def sample_lo_offset(self,
                          model: str,  #["deterministic", "gaussian", "uniform"],
@@ -300,7 +320,7 @@ class WirelessParams:
 
     def sample_new_data(self):
         """Generate new data [bits] sampling from the defined distribution."""
-        return self.traffic_pdf.rvs(scale=self.avg_datasize, random_state=self.c.rng)
+        return self.traffic_pdf.rvs(scale=self.avg_datasize, random_state=self.c.rng).astype(int)
 
     @property
     def ap_power_dbm(self):
@@ -342,8 +362,6 @@ class GeometryParams:
         Shape: (U, 3) where U is the number of UEs. Each row is (x, y, z) in meters.
     :ivar ap_location: Positions of Access Points in the absolute coordinate system.
         Shape: (L, 3) where L is the number of APs. Each row is (x, y, z) in meters.
-    :ivar ap_array: Sionna PlanarArray instance defining the antenna array configuration
-        for Access Points, including pattern, polarization, and element spacing.
     :ivar ap_orientation: Rotation matrices for AP antenna array orientation.
         List of scipy Rotation instances (length L) defining rotation from z-boresight
         to actual pointing direction for each AP.
@@ -362,7 +380,6 @@ class GeometryParams:
     area_coordinates: np.ndarray | list
     semantic_regions: sha.geometry.MultiPolygon | None = None
     ap_location: np.ndarray | None = None
-    ap_array: rt.PlanarArray | None = None
     ap_orientation: Rotation | None = None
     antenna_location: np.ndarray | None = None
     antenna_spacing: float | None = None
@@ -393,7 +410,7 @@ class GeometryParams:
                                                              rng=self.c.rng)
             self.regions_idx = ut.build_spatial_index(self.semantic_regions)
 
-    def update(self, frame: int = 0, **kwargs):
+    def update(self, frame: int | np.ndarray = 0, **kwargs):
         """Update geometry parameters with new values."""
         for key, value in kwargs.items():
             if hasattr(self, key):
@@ -402,13 +419,20 @@ class GeometryParams:
                     # If value has not the correct shape, numpy will raise IndexError
                     attr = getattr(self, key)
                     attr[frame] = value
-                    if key == 'ue_location':
-                        # If the key is ue_location, we also update the semantic region of the UE
-                        self.ue_region[frame] = self.in_which_region(value)
+                elif key in ["semantic_regions", "environment_shape"]:
+                    if isinstance(value, (sha.Polygon, sha.MultiPolygon)):
+                        setattr(self, key, value)
+                    else:   # If the value is a wkt, rebuild build from that
+                        setattr(self, key, sha.from_wkt(value))
+                    if key == "semantic_regions":
+                        self.regions_idx = ut.build_spatial_index(self.semantic_regions)
                 else:
                     setattr(self, key, value)
             else:
                 raise AttributeError(f"GeometryParams has no attribute '{key}'")
+        # At the end, because it requires everything else in place
+        if "ue_location" in kwargs.keys():
+            self.ue_region[frame] = self.in_which_region(kwargs["ue_location"])
 
     def in_which_region(self, points: np.ndarray) -> np.ndarray:
         """
@@ -613,21 +637,22 @@ class Metrics:
     sinr: np.ndarray = field(default=None, init=False)
     se_set: np.ndarray = field(default=None, init=False)
     se_achievable: np.ndarray = field(default=None, init=False)
-    ber: np.ndarray = field(default=None, init=False)
-    latency: np.ndarray = field(default=None, init=False)
-    packet_loss_rate: np.ndarray  = field(default=None, init=False)
+    # ber: np.ndarray = field(default=None, init=False)
+    # latency: np.ndarray = field(default=None, init=False)
+    # packet_loss_rate: np.ndarray  = field(default=None, init=False)
     # Localization parameters
-    mse_position: np.ndarray = field(default=None, init=False)
-    mse_velocity: np.ndarray = field(default=None, init=False)
-    detection_probability: np.ndarray = field(default=None, init=False)
-    false_alarm_rate: np.ndarray = field(default=None, init=False)
-    range_resolution: np.ndarray = field(default=None, init=False)
-    doppler_resolution: np.ndarray = field(default=None, init=False)
+    # mse_position: np.ndarray = field(default=None, init=False)
+    # mse_velocity: np.ndarray = field(default=None, init=False)
+    # detection_probability: np.ndarray = field(default=None, init=False)
+    # false_alarm_rate: np.ndarray = field(default=None, init=False)
+    # range_resolution: np.ndarray = field(default=None, init=False)
+    # doppler_resolution: np.ndarray = field(default=None, init=False)
     efim_oracle: np.ndarray = field(default=None, init=False)
     efim_predicted: np.ndarray = field(default=None, init=False)
     # Semantic parameters
     misclassification: np.ndarray = field(default=None, init=False)
     risk_predicted: np.ndarray = field(default=None, init=False)
+    risk_predicted_full: np.ndarray = field(default=None, init=False)
     risk_hat: np.ndarray = field(default=None, init=False)
 
     def __post_init__(self):
@@ -639,17 +664,11 @@ class Metrics:
         self.se_achievable = np.nan * np.zeros((self.c.num_frames + 1, self.c.num_ue))
         self.se_set = np.nan * np.zeros((self.c.num_frames + 1, self.c.num_ue))
         self.sinr = np.nan * np.zeros((self.c.num_frames + 1, self.c.num_ue))
-        # self.latency = np.nan * np.zeros((self.c.num_frames + 1, self.c.num_ue))
-        # self.mse_position = np.nan * np.zeros((self.c.num_frames + 1, self.c.num_ue))
-        # self.mse_velocity = np.nan * np.zeros((self.c.num_frames + 1, self.c.num_ue))
-        # self.detection_probability = np.nan * np.zeros((self.c.num_frames + 1, self.c.num_target))
-        # self.false_alarm_rate = np.nan * np.zeros((self.c.num_frames + 1, self.c.num_target))
-        # self.range_resolution = np.nan * np.zeros((self.c.num_frames + 1, self.c.num_ue))
-        # self.doppler_resolution = np.nan * np.zeros((self.c.num_frames + 1, self.c.num_ue))
         self.efim_oracle = np.zeros((self.c.num_frames + 1, self.c.num_slots, self.c.num_ue, 3, 3))
         self.efim_predicted = np.zeros((self.c.num_frames + 1, self.c.num_slots, self.c.num_ue, 3, 3))
         self.misclassification = np.zeros((self.c.num_frames + 1, self.c.num_ue), dtype=bool)
-        self.risk_predicted = np.zeros((self.c.num_frames + 1, self.c.num_ue, 2))
+        self.risk_predicted_full = np.zeros((self.c.num_frames + 1, self.c.num_ue, 2))
+        self.risk_predicted = np.zeros((self.c.num_frames + 1, self.c.num_ue))
         self.risk_hat = np.zeros((self.c.num_frames + 1, self.c.num_ue))
 
 
@@ -671,3 +690,143 @@ class Metrics:
                     setattr(self, key, value)
             else:
                 raise AttributeError(f"EstimateParams has no attribute '{key}'")
+
+
+##### Useful methods for saving/loading #####
+# Check parameter file
+def check_dataclass(filepath: str, parameters: type[dataclass], keys: list[str] | None = None) -> bool:
+    # Adding extension
+    if not filepath.endswith(".npz"):
+        filepath += ".npz"
+
+    # Check file existence
+    if not os.path.exists(filepath):
+        return False
+
+    # Filter data
+    param_dict = asdict(parameters)
+    if keys is not None:
+        filtered_dict = [(k, v) for (k, v) in zip(param_dict.keys(), param_dict.values()) if k in keys]
+    else:
+        filtered_dict = param_dict.items()
+    #   Check data
+    with np.load(filepath, allow_pickle=True) as data:
+        try:
+            are_equal = np.all([np.all(data[key] == value) for key, value in filtered_dict])
+        except KeyError as e:
+            print(f"Missing key in parameter file: {e}")
+            return False
+    if are_equal:
+        return True
+    else:
+        return False
+
+
+# Save data
+def save_params_npz(filepath: str, **dataclass_instances) -> str:
+    """Flatten one or more dataclass instances (SharedParams, GeometryParams, EstimationParams,
+    Metrics, ...) into a single compressed .npz archive, one array per field, keyed as
+    "<name>_<field>" (name = the kwarg you passed it under). np.load() on a .npz is lazy
+    per-key, so a later CSV-of-a-subset only needs to touch the keys it actually wants,
+    not the whole archive.
+
+    Field-conversion rules:
+      - scipy Rotation -> quaternion array (`.as_quat()`)
+      - shapely Polygon/MultiPolygon -> WKT string
+      - dict -> stored as a 0-d object array (allow_pickle)
+      - a field that's a *reference to another one of the passed dataclass instances*
+        (e.g. GeometryParams.c, EstimationParams.geo) is skipped -- avoids saving the
+        same data twice; pass every dataclass you want saved explicitly.
+      - genuinely unserializable live objects (rt.PlanarArray, rtree.index.Index, a live
+        np.random.Generator) are skipped.
+
+    :param filepath: str, output path (".npz" appended automatically if missing).
+    :param dataclass_instances: dataclasses passed as name=instance, e.g.
+        save_params_npz(path, shared=env.c, geo=env.geo, estimate=env.estimate, metrics=env.metrics)
+
+    :returns: str, the actual path written (with ".npz" ensured).
+    """
+    instance_ids = {id(v) for v in dataclass_instances.values()}
+    flat = {}
+
+    for group_name, obj in dataclass_instances.items():
+        for f in fields(obj):
+            value = getattr(obj, f.name)
+            key = f"{f.name}"
+
+            if id(value) in instance_ids:
+                continue  # back-reference to another saved dataclass -- skip, avoid duplication
+            if value is None:
+                continue
+            if isinstance(value, (SharedParams, GeometryParams)):
+                continue
+            if isinstance(value, Rotation):
+                flat[key] = value.as_quat()
+            elif isinstance(value, (sha.geometry.Polygon, sha.geometry.MultiPolygon)):
+                flat[key] = np.array(value.wkt)
+            elif isinstance(value, (rt.PlanarArray, rtree.index.Index, np.random.Generator)):
+                # print(f"save_params_npz: skipping non-serializable field '{key}' ({type(value).__name__}).")
+                continue
+            elif isinstance(value, dict):
+                flat[key] = np.array(value, dtype=object)
+            else:
+                flat[key] = np.asarray(value)
+
+    if not filepath.endswith(".npz"):
+        filepath += ".npz"
+    os.makedirs(os.path.dirname(filepath), exist_ok=True)
+    np.savez_compressed(filepath, **flat)
+    return filepath
+
+def save_radiomap(filepath: str, rm: rt.RadioMap, ap_location: np.ndarray) -> str:
+    """Extract a RadioMap's numeric data to plain NumPy arrays and save as a single .npz.
+    Geometry metadata (cell_centers, cell_size) is included so the grid can be reconstructed
+    for plotting/lookup later without needing the original scene or solver.
+
+    :param filepath: str, output path (".npz" appended automatically if missing).
+    :param rm: sionna.rt.RadioMap, the computed radio map to save.
+    :param ap_location: np.ndarray, the location of the access points (TX) in the radio map.
+
+    :returns: str, the actual path written.
+    """
+    data = {
+        "ap_location": ap_location,
+        "cell_centers": np.array(rm.cell_centers),
+        "cell_size": np.array(rm.cell_size),
+        "cells_count": np.array(rm.cells_count),
+        "cells_per_dim": np.array(rm.cells_per_dim),
+        "center": np.array(rm.center),
+        "num_rx": rm.num_rx,
+        "num_tx": rm.num_tx,
+        "orientation": np.array(rm.orientation),
+        "path_gain": np.array(rm.path_gain),
+        "rx_cell_indices": np.array(rm.rx_cell_indices),
+        "size": np.array(rm.size),
+        "tx_cell_indices": np.array(rm.tx_cell_indices)
+    }
+    # RSS/SINR require tx power / noise assumptions baked in at query time in some
+    # Sionna versions -- include them only if directly available as attributes, so a
+    # version mismatch here doesn't take down the whole save.
+    for attr in ("rss", "sinr"):
+        if hasattr(rm, attr):
+            try:
+                data[attr] = np.array(getattr(rm, attr))
+            except Exception:
+                pass
+
+    if not filepath.endswith(".npz"):
+        filepath += ".npz"
+    os.makedirs(os.path.dirname(filepath), exist_ok=True)
+    np.savez_compressed(filepath, **data)
+    return filepath
+
+
+def load_radiomap(filepath: str):
+    if not filepath.endswith(".npz"):
+        filepath += ".npz"
+    with np.load(filepath) as data:
+        FakeRadioMap = make_dataclass("FakeRadioMap", data.keys())
+        return FakeRadioMap(**data)
+
+
+

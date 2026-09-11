@@ -1,4 +1,4 @@
-import multiprocessing
+import threading
 import os
 import numpy as np
 import torch
@@ -44,6 +44,9 @@ class SimulationEnvironment:
                  ue_power : float = p.UE_POW,
                  lo_ppm: float | np.ndarray = p.PPM_XO,
                  debugging: bool = False,
+                 env_folder: str = p.ENV_FOLDER,
+                 scene_folder: str = p.SCENE_FOLDER,
+                 generate_channel: bool = False,
                  ):
         r"""Initializes the simulation environment for a wireless communication scenario.
 
@@ -93,26 +96,44 @@ class SimulationEnvironment:
         # Randomization
         self.episode = episode                          # Set episode number
         self.rng = np.random.default_rng(self.episode)  # Random number generator used everywhere
-        phy.config.seed = self.episode                  # Configuring sionna.phy for ussing seed equal to episode no.
+        phy.config.seed = self.episode                  # Configuring sionna.phy to use seed equal to episode no.
         self.debug = debugging                          # Boolean declaring debug session
         if self.debug:
             self.channel_fig = None
             self.env_fig = None
 
+        # Useful folders
+        self.env_folder = env_folder
+        self.scene_folder = scene_folder
+
+        os.makedirs(self.env_folder, exist_ok=True)
+        os.makedirs(self.scene_folder, exist_ok=True)
+
         # SHARED PARAMETERS
         # General constants (+1 in num_frames accounts for the initial state being frame 0)
-        self.c = p.SharedParams(num_ap=num_ap, num_ue=num_ue, num_regions=num_regions,
-                                num_ant_h=num_ant_h, num_ant_v=num_ant_v,
-                                num_scs=num_scs, num_sym=num_sym, num_slots=num_slot, num_frames=num_frames,
-                                rays=rt_parameters, rng=self.rng)       # Parameters collecting shared variables
+        sha_kwargs = {
+            "num_ap": num_ap,
+            "num_ue": num_ue,
+            "num_regions": num_regions,
+            "num_ant_h": num_ant_h,
+            "num_ant_v": num_ant_v,
+            "num_scs": num_scs,
+            "num_sym": num_sym,
+            "num_slots": num_slot,
+            "num_frames": num_frames,
+            "rays": rt_parameters
+        }
+        self.c = p.SharedParams(**sha_kwargs, rng=self.rng)       # Parameters collecting shared variables
 
         # WIRELESS attributes
         # Compute wireless parameters from numerology and carrier (check dataclass for help)
-        self.wireless = p.WirelessParams(c=self.c,
-                                         numerology=numerology,
-                                         carrier=carrier_freq,
-                                         lo_ppm=lo_ppm * np.ones(self.U),
-                                         ue_power=ue_power * np.ones(self.U))  # Parameters collecting wireles variables
+        wir_kwargs = {
+            "numerology": numerology,
+            "carrier": carrier_freq,
+            "lo_ppm": lo_ppm,
+            "ue_power": ue_power,
+        }
+        self.wireless = p.WirelessParams(**wir_kwargs, c=self.c)  # Parameters collecting wireles variables
 
         # GEOMETRY and SCENE
         self._scene_name = scene_name
@@ -142,6 +163,16 @@ class SimulationEnvironment:
         # Initialize metrics parameters
         self.metrics = p.Metrics(c=self.c)      # Metrics to be saved for performance evaluation
 
+        ## Before loading the module, check if the env for the episode has been already generated
+        self.env_filename = os.path.join(self.env_folder, f"ep{self.episode:04d}.npz")
+        data_check = (p.check_dataclass(self.env_filename, self.c, keys=list(sha_kwargs.keys())) and
+                      p.check_dataclass(self.env_filename, self.wireless, keys=list(wir_kwargs.keys())) and
+                      p.check_dataclass(self.env_filename, self.geo, keys=["area_coordinates"]))
+        if data_check and not generate_channel:
+            self._load_env = True
+        else:
+            self._load_env = False
+
         # RadioMap and RayTracer
         self.rm: rt.RadioMap = None             # Instance of a RadioMap. Set in _setup_scene()
         self.rm_solver = rt.RadioMapSolver()    # Solver module for RadioMap computation
@@ -169,7 +200,6 @@ class SimulationEnvironment:
         self.transmission_module = transmission_module
         self.tracker_module = tracker_module
         self.performance = performance
-
 
     def setup_scenario(self,
                        ap_pos: float | np.ndarray | None = None,
@@ -213,33 +243,38 @@ class SimulationEnvironment:
            :meth:`place_aps`, :meth:`ue_random_positioning`, :meth:`compute_ue_ap_distance`
         """
         ### Check input and populate geometry variables
-        # [λ] default half-wavelength spacing else whatever was input
-        antenna_spacing = antenna_spacing or 1 / 2
+        if self._load_env:
+            with np.load(self.env_filename, allow_pickle=True) as data:
+                self.geo.update(np.arange(self.K + 1), **ut.filter_kwargs(self.geo, **data))
+                self.wireless.update(**ut.filter_kwargs(self.wireless, **data))
+                ap_array = None
+        else:
+            # [λ] default half-wavelength spacing else whatever was input
+            antenna_spacing = antenna_spacing or 1 / 2
 
-        # Place APs, UEs and compute their distances
-        ap_pos, ap_rot, ant_pos, ap_array = self.place_aps(antenna_spacing, ap_pos)
-        init_ue_pos = self.ue_random_positioning() if init_ue_pos is None else init_ue_pos
+            # Place APs, UEs and compute their distances
+            ap_pos, ap_rot, ant_pos = self.place_aps(antenna_spacing, ap_pos)
+            init_ue_pos = self.ue_random_positioning() if init_ue_pos is None else init_ue_pos
 
-        # Set velocity covariance
-        try:
-            assert ue_vel_cov.shape == (self.U, 3, 3), "ue_vel_cov must have shape (U, 3, 3)"
-        except AttributeError:
-            # Set a standard diagonal matrix for all UE with sigma_x, sigma_y = V_max / 3 and sigma_z = 1e-9
-            ue_vel_cov = ue_vel_cov ** 2 * np.repeat(np.array(np.eye(3))[np.newaxis], self.U, axis=0)
-            ue_vel_cov[:, 2, 2] = 1e-9
+            # Set velocity covariance
+            try:
+                assert ue_vel_cov.shape == (self.U, 3, 3), "ue_vel_cov must have shape (U, 3, 3)"
+            except AttributeError:
+                # Set a standard diagonal matrix for all UE with sigma_x, sigma_y = V_max / 3 and sigma_z = 1e-9
+                ue_vel_cov = ue_vel_cov ** 2 * np.repeat(np.array(np.eye(3))[np.newaxis], self.U, axis=0)
+                ue_vel_cov[:, 2, 2] = 1e-9
 
-        # Update geometry variables
-        self.geo.update(self.frame,
-                        ap_location=ap_pos,
-                        ap_orientation=ap_rot,
-                        ap_array=ap_array,
-                        antenna_location=ant_pos,
-                        antenna_spacing=antenna_spacing,
-                        ue_location=init_ue_pos,
-                        ue_vel_cov=ue_vel_cov)
+            # Update geometry variables
+            self.geo.update(self.frame,
+                            ap_location=ap_pos,
+                            ap_orientation=ap_rot,
+                            antenna_location=ant_pos,
+                            antenna_spacing=antenna_spacing,
+                            ue_location=init_ue_pos,
+                            ue_vel_cov=ue_vel_cov)
 
-        # Sample LO offset at the initial frame for CTO and CFO residual baselines
-        self.wireless.sample_lo_offset("gaussian", store=True)
+            # Sample LO offset at the initial frame for CTO and CFO residual baselines
+            self.wireless.sample_lo_offset("gaussian", store=True)
 
         ### Initialize estimated variable
         # Assumption: the UE estimated position is the center of the overall area they are in. Then, the prior
@@ -287,8 +322,12 @@ class SimulationEnvironment:
             cfo_base = np.zeros_like(cfo_base)
 
         # Generate channel realization for the whole frame
-        paths = self.path_solver(self.scene, seed=self.episode, **ut.filter_kwargs(self.path_solver, **self.c.rays))
-        channel = self.compute_cfr(paths, cfo_base, cto_base)   # [L, M, U, S, T, F]
+        if not self._load_env:
+            paths = self.path_solver(self.scene, seed=self.episode, **ut.filter_kwargs(self.path_solver, **self.c.rays))
+            channel = self.compute_cfr(paths, cfo_base, cto_base)   # [L, M, U, S, T, F]
+        else: # The environment is loaded from a file
+            paths = None
+            channel = self.wireless.channel[self.frame]
 
         ### Prior
         # Update through Kalman equations
@@ -324,12 +363,17 @@ class SimulationEnvironment:
         ue_slot_map = self.ra_method(self.frame, **kwargs)
         # Take indexing variables
         ue_active_per_slot, slot_idx, ue_idx = self.ra_method.scheduled_ues(ue_slot_map)
+        not_selected = ~np.isin(np.arange(self.U), ue_idx)
         # Compute approximate semantic risk through oracle eFIM
         risk_hat = np.zeros(self.U)
         risk0, risk1, _ = self.ra_method.eval_semantic_risk(self.frame, oracle_efim, ue_pos_cov_pri)
         risk_hat[ue_idx] = risk1[slot_idx, ue_idx]
-        not_selected = ~np.isin(np.arange(self.U), ue_idx)
         risk_hat[not_selected] = risk0[not_selected]
+        # Compute predicted risk
+        risk_predicted_full = self.ra_method.output_risks()
+        risk_predicted = np.zeros(self.U)
+        risk_predicted[ue_idx] = risk_predicted_full[ue_idx, 1]
+        risk_predicted[not_selected] = risk_predicted_full[not_selected, 0]
 
         ### Simulating abstract transmission for CF-mMIMO operations
         # Transpose to put the slots as batches for the transmission module (needed for GPU enhancement)
@@ -379,7 +423,8 @@ class SimulationEnvironment:
                             efim_oracle=oracle_efim,
                             efim_predicted=predicted_efim,
                             misclassification=self.geo.ue_region[self.frame] != self.estimate.ue_region_hat[self.frame],
-                            risk_predicted=self.ra_method.output_risks(),
+                            risk_predicted_full=risk_predicted_full,
+                            risk_predicted=risk_predicted,
                             risk_hat=risk_hat,
                             ue_slot_map=ue_slot_map,
                             )
@@ -424,6 +469,10 @@ class SimulationEnvironment:
 
             # Semantic errors
             print(f"The current region error is: {self.geo.ue_region[self.frame] == self.estimate.ue_region_hat[self.frame]}")
+
+        if (not self._load_env) and (self.frame == self.K - 1):    # Last frame
+            p.save_params_npz(self.env_filename, sha=self.c, geo=self.geo, wir=self.wireless)
+            print(f"Environment saved into file: {self.env_filename}")
 
         # Check feasibility of the current allocation
         if np.any(np.sum(ue_slot_map, axis=-1) > 1):
@@ -591,12 +640,8 @@ class SimulationEnvironment:
             ap_cen_pos = np.array([boundary.interpolate(d).coords[0] for d in distances])
             ap_cen_pos[:, 2] = ap_height
 
-
         # Create the base array through Sionna built-in method
-        ap_array = rt.PlanarArray(num_rows=self.M_h, num_cols=self.M_v,
-                                    vertical_spacing=antenna_spacing, horizontal_spacing=antenna_spacing,
-                                    pattern="hw_dipole",
-                                    polarization="V")
+        ap_array = self._default_mimo_array(antenna_spacing)
 
         ## Point the array to the center of the environment
         # Direction vector from the array to the center
@@ -624,7 +669,7 @@ class SimulationEnvironment:
         ap_ant_pos = ant_relative_positions + ap_cen_pos[:, np.newaxis, :]
 
         # Return tuple
-        return ap_cen_pos, ap_rotation, ap_ant_pos, ap_array
+        return ap_cen_pos, ap_rotation, ap_ant_pos
 
     def ue_random_positioning(self, height: float | np.ndarray = p.UE_HEIGHT,
                               min_dist: np.ndarray = np.ones(2), margin: float = 0.95) -> np.ndarray:
@@ -671,16 +716,20 @@ class SimulationEnvironment:
         # Take previous position
         old_position = self.geo.ue_location[self.frame - 1]
 
-        # Non-zero only on x, y (see sample_velocities)
-        new_velocity = ut.sample_multivariate_gaussian(self.geo.ue_vel_cov, rng=self.rng)    # self.sample_velocities()
-        new_position = old_position + new_velocity * self.wireless.frame_time
+        if self._load_env:
+            new_position = self.geo.ue_location[self.frame]
+            new_velocity = self.geo.ue_velocity[self.frame]
+        else:
+            # Non-zero only on x, y (see sample_velocities)
+            new_velocity = ut.sample_multivariate_gaussian(self.geo.ue_vel_cov, rng=self.rng)    # self.sample_velocities()
+            new_position = old_position + new_velocity * self.wireless.frame_time
 
-        # Clip new position within the environment boundaries
-        idx = np.array([self.geo.environment_shape.contains(sha.geometry.Point(p)) for p in new_position])
-        new_position[~idx] = old_position[~idx]
+            # Clip new position within the environment boundaries
+            idx = np.array([self.geo.environment_shape.contains(sha.geometry.Point(p)) for p in new_position])
+            new_position[~idx] = old_position[~idx]
 
-        # Advance the frame counter, then store the new state there
-        self.geo.update(self.frame, ue_location=new_position, ue_velocity=new_velocity)
+            # Advance the frame counter, then store the new state there
+            self.geo.update(self.frame, ue_location=new_position, ue_velocity=new_velocity)
 
         # Reflect the update in the scene
         for u in range(self.U):
@@ -690,32 +739,22 @@ class SimulationEnvironment:
 
         return new_position, new_velocity
 
-    def sample_velocities(self) -> np.ndarray:
-        r"""Sample velocities from the covariance matrices in a vectorized version
-        It uses Cholesky and explicit multiplication to avoid loops, but it needs a positive definitive covariance
-         3-by-3 matrix. If 2D is considered, set `math:\sigma_z = 1e-9` prior to calling this function.
-        """
-        # Precompute Cholesky decompositions: shape (U, 3, 3)
-        L = np.linalg.cholesky(self.geo.ue_vel_cov)  # Upper triangular Cholesky factors
-        # Generate standard normal samples: shape (U, 1, 3)
-        standard_samples = self.rng.standard_normal((self.U, 1, 3))
-        # Apply Cholesky to obtain X = μ + L @ Z, where Z ~ N(0, I)
-        return np.squeeze(np.einsum('nij,nmj->nmi', L, standard_samples), axis=1)
-
     def compute_cfr(self, paths: rt.Paths,
                     fo: np.ndarray | None = None, to: np.ndarray | None = None) -> np.ndarray:
         """Compute the channel frequency response from `paths`, accounting for UE mobility (Doppler-driven), then apply
         timing offset (TO) and frequency offset (FO), assuming ISI and ICI are negligible.
 
         :param paths: sionna.rt.Paths, output of raytrace_channel().
-        :param fo: np.ndarray | None, shape (U,), frequency offset [Hz]. Default: 0.
-        :param to: np.ndarray | None, shape (U,), timing offset [s] per OFDM symbol. Default: 0.
+        :param fo: np.ndarray, shape (U,), frequency offset [Hz]. Default: 0.
+        :param to: np.ndarray, shape (U,), timing offset [s] per OFDM symbol. Default: 0.
 
         :returns: np.ndarray, complex CFR of shape (L, M, U, S, T, F).
         """
+        fo = fo if fo is not None else np.zeros(self.U)
+        to = to if to is not None else np.zeros(self.U)
         # Check that to and fo are small enough to have ICI negligible
-        if np.any(fo / self.wireless.sc_spacing > 0.1):
-            idx = (fo / self.wireless.sc_spacing > 0.1).nonzero()
+        if np.any((fo / self.wireless.sc_spacing) > 0.1):
+            idx = ((fo / self.wireless.sc_spacing) > 0.1).nonzero()
             ue_list = np.arange(self.U)[idx].tolist()
             print(f"Warning: the ICI is not negligible for UEs in {ue_list}.")
 
@@ -803,16 +842,12 @@ class SimulationEnvironment:
         at their current (``self.frame``) location, and compute an AP-side radio map (path gain) using an independently
         rebuilt scene with the APs as transmitters.
         """
-        # Copy scene to compute RadioMap considering AP as transmitters (working due to symmetric UL/DL channel)
-        scene_for_rm = self._build_base_scene(self._scene_name)[0]
-        # scene_for_rm.tx_array = self.geo.ap_array
-
         # Single-antenna array shared by all UEs (transmitters)
         self.scene.tx_array = rt.PlanarArray(num_rows=1, num_cols=1,
                                              pattern="iso", polarization="V")
-        scene_for_rm.tx_array = self.scene.tx_array
+
         # Multi-antenna array shared by all APs (receivers)
-        self.scene.rx_array = self.geo.ap_array
+        self.scene.rx_array = self._default_mimo_array(self.geo.antenna_spacing)
 
         # Add UEs as transmitters at their current location
         for u in range(self.U):
@@ -822,34 +857,50 @@ class SimulationEnvironment:
         # Add APs as receivers, oriented per ap_orientation (z-boresight convention, see place_aps)
         for l in range(self.L):
             orientation = self.geo.ap_orientation[l].as_euler('zyx')
-            self.scene.add(rt.Receiver(name=f"ap_{l}", position=self.geo.ap_location[l], orientation=orientation))
-            scene_for_rm.add(rt.Transmitter(name=f"ap_{l}", position=self.geo.ap_location[l], orientation=orientation))
+            self.scene.add(rt.Receiver(name=f"ap_{l}",
+                                       position=self.geo.ap_location[l],
+                                       orientation=orientation))
 
-        # Explicitly fix the measurement plane
-        self.rm = self.rm_solver(scene_for_rm,
-                                 seed=self.episode,
-                                 **ut.filter_kwargs(self.rm_solver, **self.c.rays))
+        # Check if a radio map with the same AP position is available
+        scene_name = self._scene_name or "default_room"
+        rm_filename = os.path.join(self.scene_folder, "rm", f"{scene_name}_AP{self.c.num_ap}_M{self.c.num_ant}")
+        if p.check_dataclass(rm_filename, self.geo, keys=["ap_location"]):
+            self.rm = p.load_radiomap(rm_filename)
+        else:
+            # Copy scene to compute RadioMap considering AP as transmitters (working due to symmetric UL/DL channel)
+            scene_for_rm = self._build_base_scene(self._scene_name)[0]
+            scene_for_rm.tx_array = self.scene.tx_array
+            for l in range(self.L):
+                scene_for_rm.add(rt.Transmitter(name=f"ap_{l}",
+                                                position=self.geo.ap_location[l],
+                                                orientation=self.geo.ap_orientation[l].as_euler('zyx')))
 
-        # Set targets/cars
-        if self.c.num_car:
-            # Start car setup
-            car_material = rt.ITURadioMaterial("car-material",
-                                            "metal",
-                                            thickness=0.01,
-                                            color=(0.8, 0.1, 0.1))
-            # TODO: randomize positions
-            cars = [rt.SceneObject(fname=rt.scene.low_poly_car, name=f"car_{i}", radio_material=car_material) for i in range(self.c.num_car)]
-            self.scene.edit(add=cars)
+            # Set targets/cars
+            if self.c.num_car:
+                # Start car setup
+                car_material = rt.ITURadioMaterial("car-material",
+                                                "metal",
+                                                thickness=0.01,
+                                                color=(0.8, 0.1, 0.1))
+                # TODO: randomize positions
+                cars = [rt.SceneObject(fname=rt.scene.low_poly_car, name=f"car_{i}", radio_material=car_material) for i in range(self.c.num_car)]
+                self.scene.edit(add=cars)
 
-        # Setting some default scattering coefficients and patterns for the scene
-        if self.c.rays["diffuse_reflection"]:
-            for material in self.scene.radio_materials.keys():
-                try:
-                    self.scene.radio_materials[material].scattering_coefficient = p.scattering_coefficient_dict[material]
-                    self.scene.radio_materials[material].scattering_pattern = p.scattering_pattern_dict[material]
-                except (AttributeError, KeyError):
-                    print(f"Scattering coefficient and pattern not supported for {material}. "
-                          f"Scattering is disabled for this material.")
+            # Setting some default scattering coefficients and patterns for the scene
+            if self.c.rays["diffuse_reflection"]:
+                for material in self.scene.radio_materials.keys():
+                    try:
+                        self.scene.radio_materials[material].scattering_coefficient = p.scattering_coefficient_dict[material]
+                        self.scene.radio_materials[material].scattering_pattern = p.scattering_pattern_dict[material]
+                    except (AttributeError, KeyError):
+                        print(f"Scattering coefficient and pattern not supported for {material}. "
+                              f"Scattering is disabled for this material.")
+
+            # Compute RadioMap
+            self.rm = self.rm_solver(scene_for_rm,
+                                     seed=self.episode,
+                                     **ut.filter_kwargs(self.rm_solver, **self.c.rays))
+            p.save_radiomap(rm_filename, self.rm, self.geo.ap_location)
 
     def _build_base_scene(self, scene_name: str | None,
                           area_coordinates: list | np.ndarray | None = None) -> tuple[rt.Scene, list | np.ndarray]:
@@ -860,7 +911,7 @@ class SimulationEnvironment:
         # Check for scene_name first, then area_coordinates.
         if scene_name:
             try:
-                scene = rt.load_scene(os.path.join(p.SCENE_FOLDER, scene_name))
+                scene = rt.load_scene(os.path.join(self.scene_folder, scene_name))
             except FileNotFoundError:
                 print(f"Scene {scene_name} not found. Checking if a default scene has the same name.")
                 scene = rt.load_scene(getattr(rt.scene, scene_name))
@@ -868,7 +919,7 @@ class SimulationEnvironment:
             except Exception as e:
                 raise e
                 # TODO: the following works on the ConvexHull, while it should account for holes in concave polygon.
-                area_coordinates = ut.scene_area_coordinates(self.scene)  # Generate base polygon coordinates from scene
+            area_coordinates = ut.scene_area_coordinates(scene)  # Generate base polygon coordinates from scene
         # Generate default area coordinate if reached here
         else:
             if area_coordinates is None:
@@ -897,7 +948,7 @@ class SimulationEnvironment:
         """
         # TODO: move this function into utils and specify square size in the name
         # Check if meshes already exist first
-        mesh_path = os.path.join(p.MESH_FOLDER, "_default_room_floor.ply")
+        mesh_path = os.path.join(self.scene_folder, "meshes", "_default_room_floor.ply")
         if os.path.exists(mesh_path):
             return mesh_path
         else:
@@ -908,6 +959,14 @@ class SimulationEnvironment:
             # Export and return mesh
             mesh.export(mesh_path)
             return mesh_path
+
+    def _default_mimo_array(self, antenna_spacing: float):
+        return rt.PlanarArray(num_rows=self.M_h,
+                              num_cols=self.M_v,
+                              vertical_spacing=antenna_spacing,
+                              horizontal_spacing=antenna_spacing,
+                              pattern="hw_dipole",
+                              polarization="V")
 
     @property
     def L(self) -> int:
@@ -950,14 +1009,17 @@ class SimulationEnvironment:
         return self.U * self.S * self.L * self.M * self.T * self.F / 1024 ** 2
 
 
+
+
+
 def run_episode(episode: int,
                 ra_method: type[ra.ResourceAllocationBase],
                 ra_kwargs: dict | None = None,
                 env_kwargs: dict | None = None,
                 step_kwargs: dict | None = None,
-                save_folder: str = p.DATA_FOLDER,
-                gpu_guard: type[multiprocessing.Semaphore] | None = None,
-                save: bool = True,
+                gpu_guard: threading.Semaphore | None = None,
+                save_results: bool = True,
+                results_folder: str = p.DATA_FOLDER,
                 verbose: bool = False) -> dict:
     """Run one full simulation episode: build the environment, wire up the modules, step
     through every frame, then save the whole run's Shared/Geometric/Estimation/Metrics
@@ -974,9 +1036,10 @@ def run_episode(episode: int,
         automatically -- don't include it here.
     :param step_kwargs: dict | None, kwargs forwarded to every `env.step(...)` call
         (cto, cfo, sync).
-    :param save_folder: str, directory the output .npz is written to.
-    :param gpu_guard: multiprocessing.Semaphore, set to the GPU access to grant.
-    :param save: bool, if False, skip saving (useful for quick interactive runs).
+
+    :param gpu_guard: threading.Semaphore, set to the GPU access to grant.
+    :param save_results: bool, if False, skip saving (useful for quick interactive runs).
+    :param results_folder: str, directory the output .npz is written to.
     :param verbose: bool, print a per-frame progress bar.
 
     :returns: dict, small scalar summary (mean over frames) of a few key metrics, plus the
@@ -1004,7 +1067,7 @@ def run_episode(episode: int,
 
         trans_mat = np.eye(3)[np.newaxis, :, :].repeat(env.U, axis=0)
         obs_mat = np.eye(3)[np.newaxis, :, :].repeat(env.U, axis=0)
-        proc_noise_cov = env.geo.ue_vel_cov
+        proc_noise_cov = env.geo.ue_vel_cov * env.wireless.frame_time
         obs_noise_cov = np.eye(3)[np.newaxis, :, :].repeat(env.U, axis=0)
         tracker = LinearKalmanTracker(trans_mat, obs_mat, proc_noise_cov, obs_noise_cov)
 
@@ -1017,14 +1080,11 @@ def run_episode(episode: int,
         for _ in frame_iter:
             env.step(**step_kwargs)
 
-        # --- Save the whole run: Shared, Geometric, Estimation, and Metrics parameters ---
-        save_path = None
-        if save:
+        # --- Save the whole run: Estimation, and Metrics parameters ---
+        if save_results:
             ra_method_label = next(key for key, val in ra.available_methods.items() if val == ra_method)
-            filename = os.path.join(save_folder, f"{ra_method_label}_ep{episode:04d}.npz")
-            save_path = ut.save_params_npz(filename,
-                                            shared=env.c, geo=env.geo,
-                                            estimate=env.estimate, metrics=env.metrics)
+            filename = os.path.join(results_folder, f"{ra_method_label}_ep{episode:04d}.npz")
+            save_path = p.save_params_npz(filename, estimate=env.estimate, metrics=env.metrics)
 
         # --- Small scalar summary for quick cross-episode aggregation ---
         summary = {
@@ -1038,7 +1098,10 @@ def run_episode(episode: int,
         return summary
 
 if __name__ == "__main__":
-    env_args = {"debugging": False, "num_frames": 5, "num_ue": 10}
+    num_ue = 10
+    env_folder = os.path.join(p.ENV_FOLDER, f"UE{num_ue:03d}")
+    env_args = {"debugging": False, "num_frames": 5, "num_ue": 10, "env_folder": env_folder}
     step_args = {"cfo": False}
-    summary = run_episode(1, ra.SemanticRiskAllocationNoComm, gpu_guard=multiprocessing.Semaphore(1), env_kwargs=env_args, step_kwargs=step_args, verbose=True)
+    summary = run_episode(1, ra.SemanticRiskAllocation, gpu_guard=threading.Semaphore(1), env_kwargs=env_args, step_kwargs=step_args, verbose=True,
+                          results_folder=os.path.join(os.getcwd(), "data_test"))
     print(summary)

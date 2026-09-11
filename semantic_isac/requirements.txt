@@ -8,3 +8,5 @@ Shapely
 sionna
 tqdm
 trimesh
+torch
+GPUtil

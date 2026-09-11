@@ -4,7 +4,7 @@
 
 set -euo pipefail
 
-VENV_ACTIVATE="$HOME/venv/MAC-for-ISAC/bin/activate"
+VENV_ACTIVATE="$HOME/venv/semantic_isac/bin/activate"
 LOG_DIR="logs"
 mkdir -p "$LOG_DIR"
 
@@ -18,6 +18,7 @@ done
 # whatever combination of scripts/configs you want running concurrently.
 JOBS=(
     "MAF_vs_ue|python simulate_vs_ue.py --ra_method MAF"
+    "PBL_vs_ue|python simulate_vs_ue.py --ra_method PBL"
     "SRI_vs_ue|python simulate_vs_ue.py --ra_method SRI"
     "SRL_vs_ue|python simulate_vs_ue.py --ra_method SRL"
     "PBI_vs_ue|python simulate_vs_ue.py --ra_method PBI"
@@ -52,6 +53,7 @@ TOTAL_GPU_VRAM=$(nvidia-smi --query-gpu=memory.total --format=csv,noheader,nouni
 GPU_SLOTS=$(detect_gpu_slots)
 if [ "$GPU_SLOTS" -eq 0 ]; then
     echo "No GPU detected -- scripts will run CPU-only."
+    export CUDA_VISIBLE_DEVICES=""
 else
     echo "GPU budget ${TOTAL_GPU_VRAM} -> ${GPU_SLOTS} max VRAM jobs/script"
 fi
