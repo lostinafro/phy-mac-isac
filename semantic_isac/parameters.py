@@ -16,28 +16,28 @@ from argparse import ArgumentParser
 
 ## DEFAULT PARAMETERS
 # Scenario
-NUM_AP = 4
-NUM_ANT = 4
-NUM_UE = 40
+NUM_AP = 3
+NUM_ANT = 2
+NUM_UE = 16
 NUM_EP = int(1e3)
-ROOM_SIDE = 50             # [m]
+ROOM_SIDE = 100             # [m]
 VEL_STD = 4                 # [m/s]
-REGIONS = 8
+REGIONS = 16
 UE_HEIGHT = 1.5             # [m]
 
 # Wireless
 CARRIER = 3e9       # [Hz]
 NUMEROLOGY = 0
-NUM_SCS = 144
+NUM_SCS = 108
 NUM_SYM = 14
 NUM_SLOTS = 5 * 2 ** NUMEROLOGY
-NUM_FRAMES = 100
+NUM_FRAMES = 30
 PPM_XO = 5 / 50                # Residual PPM after initial synchronization from PRACH
 PPM_OCXO = 0.5 / 50            # Residual PPM after initial synchronization
 DATASIZE_AVG = 2048
-QUEUE_MAX = int(4 * DATASIZE_AVG)
+QUEUE_MAX = int(10 * DATASIZE_AVG)
 QUEUE_RELIABILITY = 0.95         # 1 - epsilon in the paper
-UE_POW = ut.dbm2watt(10)
+UE_POW = ut.dbm2watt(0)
 
 # DEFAULT FOLDERS
 FIGURE_FOLDER = os.path.join(os.getcwd(), "figs")
@@ -198,8 +198,8 @@ class WirelessParams:
         # Compute slot_time from numerology
         self.slot_time = 1e-3 / 2 ** self.numerology
 
-        # Compute frame_time from slot_time and S
-        self.frame_time = self.slot_time * (self.c.num_slots + 1)
+        # Compute frame_time from slot_time and S (assuming 4 DL slots)
+        self.frame_time = self.slot_time * (self.c.num_slots + 4)
 
         # Compute subcarrier spacing
         self.sc_spacing = 15e3 * 2 ** self.numerology
@@ -239,7 +239,7 @@ class WirelessParams:
             self.ap_power = np.ones(self.c.num_ap) * self.ap_power
 
         # Compute thermal noise
-        self.nob_ap = ut.thermal_noise(self.bw, noise_figure=3.0)
+        self.nob_ap = ut.thermal_noise(self.bw, noise_figure=5.0)
         self.nob_ue = ut.thermal_noise(self.bw, noise_figure=9.0)
 
         # Compute datasize and queue

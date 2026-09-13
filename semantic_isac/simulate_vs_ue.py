@@ -45,7 +45,7 @@ if __name__ == "__main__":
         free_gpus = None
 
     ### MAIN SIMULATION PARAMETERS ###
-    num_ue_vec = np.array([6, 8, 16, 24, 36])
+    num_ue_vec = np.array([6, 12, 18, 27, 36])
     num_episodes = 100
 
     # Cycling through methods

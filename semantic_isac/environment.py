@@ -440,10 +440,10 @@ class SimulationEnvironment:
                             ue_slot_map=ue_slot_map,
                             )
         # Print errors
-        every = 10
+        every = 5
         if self.debug and not (self.frame % every):
             if self.frame == 0:
-                every = 0
+                every = 1
             # Visualize
             self.env_fig = self.show_environment(paths=paths)
             self.channel_fig = self.plot_channel(channel)
@@ -455,7 +455,7 @@ class SimulationEnvironment:
 
             # UE movement
             for u in range(min(10, self.U)):
-                print(f"UE {u}: old_pos={self.geo.ue_location[self.frame - 1, u]}, new_pos={new_pos[u]}, new_vel={new_vel[u]}")
+                print(f"UE {u}: old_pos={self.geo.ue_location[self.frame - every, u]}, new_pos={new_pos[u]}, new_vel={new_vel[u]}")
 
             print(f"Allocated UEs are: {ue_idx}")
 
@@ -467,9 +467,8 @@ class SimulationEnvironment:
                     print(f"Not quasi-constant beta for AP {mask[0][idx]}, UE {mask[1][idx]} and slot {mask[2][idx]}")
 
             # Compute absolute and relative error between RadioMap and RayTracer as metrics
-            beta_gt = beta.mean(axis=-1)
-            beta_rm = self.estimate_gain_dl(self.geo.ue_location[self.frame])
-            print(f"Avg. relative RM error is: {np.mean((beta_rm - beta_gt) / beta_gt * 100)} %")
+            beta_gt = 10 * np.log10(beta.mean(axis=-1))
+            print(f"Avg. abs RM error is: {np.mean((10*np.log10(beta_hat) - beta_gt))} [dB]")
 
             # Check issues in the oracle if any
             unachievable_err = np.nonzero(se_achievable < oracle_se[slot_idx, ue_idx])[0]
@@ -484,12 +483,16 @@ class SimulationEnvironment:
                 print(f"Queue exceeded for UE {queue_exceeded}")
             else:
                 print(f"Queue within limits for all UEs")
-
+            # Cartesian errors
+            print(f"Per UE predicted PEB is: {np.sqrt(np.linalg.trace(np.linalg.inv(predicted_efim)))}")
+            print(f"Per UE oracle PEB is: {np.sqrt(np.linalg.trace(np.linalg.inv(oracle_efim[0])))}")
+            print(f"Per UE prior PEB is: {np.sqrt(np.linalg.trace(ue_pos_cov_pri))}")
+            print(f"Per UE posterior PEB is: {np.sqrt(np.linalg.trace(ue_pos_cov_post))}")
             # Semantic errors
-            print(f"Per UE semantic risk predicted was: {self.metrics.risk_predicted[self.frame - every:self.frame + 1].sum(-1)}")
-            print(f"The semantic risk approx was: {self.metrics.risk_hat[self.frame]}")
+            print(f"Per UE semantic risk predicted was: {self.metrics.risk_predicted[self.frame - every:self.frame + 1].mean(0)}")
+            print(f"Per UE semantic risk approx was: {self.metrics.risk_hat[self.frame]}")
             print(f"UEs misclassified are: {self.metrics.misclassification[self.frame]}")
-            print(f"Avg. total misclassification so far: {np.mean(self.metrics.misclassification[:self.frame + 1].sum(-1))}")
+            print(f"Avg. misclassification so far: {self.metrics.misclassification[self.frame - every:self.frame + 1].mean(0)}")
 
             print("----------------------- END FRAME ----------------------\n")
             input("Press ENTER to continue...")
@@ -970,16 +973,16 @@ class SimulationEnvironment:
         :param area_coordinates: list or np.ndarray, vertex coordinates of the area to triangulate.
         :returns: str, path to the exported .ply mesh.
         """
-        # TODO: move this function into utils and specify square size in the name
+        mesh_folder = os.path.join(self.scene_folder, "meshes")
         # Check if meshes already exist first
-        mesh_path = os.path.join(self.scene_folder, "meshes", "_default_room_floor.ply")
+        mesh_path = os.path.join(mesh_folder, "_default_room_floor.ply")
         if os.path.exists(mesh_path):
             return mesh_path
         else:
             mesh = ut.build_floor_mesh(area_coordinates)
 
             # Generate the folder if not there
-            os.makedirs(os.path.join(p.MESH_FOLDER), exist_ok=True)
+            os.makedirs(mesh_folder, exist_ok=True)
             # Export and return mesh
             mesh.export(mesh_path)
             return mesh_path
@@ -1088,7 +1091,7 @@ def run_episode(episode: int,
 
         trans_mat = np.eye(3)[np.newaxis, :, :].repeat(env.U, axis=0)
         obs_mat = np.eye(3)[np.newaxis, :, :].repeat(env.U, axis=0)
-        proc_noise_cov = env.geo.ue_vel_cov * env.wireless.frame_time
+        proc_noise_cov = env.geo.ue_vel_cov * env.wireless.frame_time ** 2
         obs_noise_cov = np.eye(3)[np.newaxis, :, :].repeat(env.U, axis=0)
         tracker = LinearKalmanTracker(trans_mat, obs_mat, proc_noise_cov, obs_noise_cov)
 
@@ -1122,10 +1125,9 @@ def run_episode(episode: int,
         return summary
 
 if __name__ == "__main__":
-    num_ue = 10
+    num_ue = 6
     env_folder = os.path.join(p.ENV_FOLDER, f"UE{num_ue:03d}")
-
-    env_args = {"debugging": False, "num_frames": 30, "num_ue": 6, "env_dirpath": env_folder}
+    env_args = {"debugging": False, "num_frames": 30, "num_ue": num_ue, "env_dirpath": env_folder}
     step_args = {"cfo": False}
     summary = run_episode(1, ra.SemanticRiskAllocation, gpu_guard=threading.Semaphore(1), env_kwargs=env_args, step_kwargs=step_args, verbose=False,
                           metrics_dirpath=os.path.join(os.getcwd(), "data_test"))
