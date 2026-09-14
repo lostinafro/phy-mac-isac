@@ -1,4 +1,5 @@
 import os
+from datetime import datetime
 import time
 import threading
 from concurrent.futures import ThreadPoolExecutor
@@ -31,25 +32,33 @@ def load_summary_from_npz(filepath: str, results_label: list[str]) -> dict:
 
 
 if __name__ == "__main__":
-    _, parallel, data_folder, verbose, overwrite, concurrent, on_gpu = p.common_parser()
-    if on_gpu:
-        free_gpus = ut.select_available_gpus()
-        if not free_gpus:
-            print("No idle GPUs found -- falling back to CPU.")
-            on_gpu = False
-            os.environ["CUDA_VISIBLE_DEVICES"] = ""
-        else:
-            os.environ["CUDA_VISIBLE_DEVICES"] = ",".join(str(i) for i in free_gpus)
-            print(f"Using GPUs: {free_gpus}")
+    ra_methods, parallel, data_folder_suffix, verbose, overwrite, concurrent, on_gpu = p.common_parser()
+    # if on_gpu:
+    #     free_gpus = ut.select_available_gpus()
+    #     if not free_gpus:
+    #         print("No idle GPUs found -- falling back to CPU.")
+    #         on_gpu = False
+    #         os.environ["CUDA_VISIBLE_DEVICES"] = ""
+    #     else:
+    #         os.environ["CUDA_VISIBLE_DEVICES"] = ",".join(str(i) for i in free_gpus)
+    #         print(f"Using GPUs: {free_gpus}")
+    # else:
+    #     free_gpus = None
+
+    if ra_methods == "":
+        ra_methods = ra.available_methods
     else:
-        free_gpus = None
+        ra_methods = [ra_methods]
 
     ### MAIN SIMULATION PARAMETERS ###
-    num_ue_vec = np.array([6, 12, 18, 27, 36])
+    num_ue_vec = np.array([12, 18, 27, 36, 54])
     num_episodes = 100
 
+    today = datetime.now().strftime("%Y-%m-%d")
+    data_folder = os.path.join(p.DATA_FOLDER, today, data_folder_suffix)
+
     # Cycling through methods
-    for ra_label in ra.available_methods.keys():
+    for ra_label in ra_methods:
         # Set RA method
         ra_method = ra.available_methods[ra_label]
         print(f"Processing {ra_label} method")
@@ -67,7 +76,7 @@ if __name__ == "__main__":
 
                 ## CPU/GPU Performances
                 # Setting up maximum no. of workers and GPU semaphore to avoid oversubscription of CPU/GPU memory
-                cpu_slots, gpu_slots = ut.get_processing_resources(concurrent, on_gpu, num_ue, usable_gpu_ids=free_gpus)
+                cpu_slots, gpu_slots = ut.get_processing_resources(concurrent, on_gpu, num_ue)
                 cpu_workers = min(cpu_slots, num_episodes)
                 # Generate GPU semaphore
                 gpu_semaphore = threading.Semaphore(gpu_slots) if on_gpu else None
@@ -76,6 +85,9 @@ if __name__ == "__main__":
                 env_dirpath = os.path.join(p.ENV_FOLDER, f"UE{num_ue:03d}")
                 save_ep_dirpath = os.path.join(data_folder, prefix + f"_U{num_ue:03d}")
                 os.makedirs(save_ep_dirpath, exist_ok=True)
+
+                # Check maximum load for non-trivial/non_explosive queues
+                avg_datasize = p.arrival_rate_init(num_ue, p.NUM_SLOTS, 2, p.NUM_SCS * 15e3 * 2 ** p.NUMEROLOGY)
 
                 ## Check which episodes have already been run
                 results = []
@@ -89,7 +101,10 @@ if __name__ == "__main__":
                         except Exception as e:
                             print(f"\tWarning: couldn't reuse cached episode {ep} ({out_path}): {e} -- re-running it.")
                     episode_kwargs.append(dict(episode=ep, ra_method=ra_method,
-                                               env_kwargs={"num_ue": int(num_ue), "env_dirpath": env_dirpath, "debugging": False},
+                                               env_kwargs={"num_ue": int(num_ue),
+                                                           "env_dirpath": env_dirpath,
+                                                           "debugging": False,
+                                                           "avg_datasize": avg_datasize},
                                                metrics_dirpath=save_ep_dirpath,
                                                gpu_guard=gpu_semaphore, verbose=verbose))
 
