@@ -39,6 +39,7 @@ class SimulationEnvironment:
                  numerology: int = p.NUMEROLOGY,
                  carrier_freq: float = p.CARRIER,
                  ue_power: float = p.UE_POW,
+                 avg_datasize: float = p.DATASIZE_AVG,
                  lo_ppm: float | np.ndarray = p.PPM_XO,
                  scene_name: str | None = None,
                  scene_dirpath: str = p.SCENE_FOLDER,
@@ -133,12 +134,13 @@ class SimulationEnvironment:
             "carrier": carrier_freq,
             "lo_ppm": lo_ppm,
             "ue_power": ue_power,
+            "avg_datasize": avg_datasize,
         }
         self.wireless = p.WirelessParams(**wir_kwargs, c=self.c)  # Parameters collecting wireles variables
 
         # GEOMETRY and SCENE
         self._scene_name = scene_name
-        self.scene, area_coordinates = self._build_base_scene(scene_name, area_coordinates)
+        self.scene, area_coordinates, self._mesh_name = self._build_base_scene(scene_name, area_coordinates)
         # Compute boundaries of semantic regions
         if boundaries is None:
             # Default is splitting the area in self.c.num_regions equal regions (see __post_init__ in GeometryParams)
@@ -402,7 +404,7 @@ class SimulationEnvironment:
         ### Update queues
         # Checking SE achievability
         se_achievable = se_eff[slot_idx, ue_idx]
-        se_per_scheduled_ue = predicted_se[ue_idx]
+        se_per_scheduled_ue = predicted_se[ue_idx] * .9
         se_per_scheduled_ue[se_per_scheduled_ue > se_achievable] = 0.
 
         # Taking the amount of bits transmitted and update the queue
@@ -416,7 +418,9 @@ class SimulationEnvironment:
 
         ### Posterior
         # Compute posterior for UE observed
-        ue_pos_hat_post, ue_pos_cov_post = self.tracker_module.posterior(obs_vec, ue_pos_hat_pri, ue_pos_cov_pri, ue_idx)
+        ue_pos_hat_post, ue_pos_cov_post = self.tracker_module.posterior(obs_vec, ue_pos_hat_pri,
+                                                                         ue_pos_cov_pri, ue_idx,
+                                                                         obs_cov=asymptotic_cov)
         self.estimate.update(self.frame,
                              ue_pos_hat_post=ue_pos_hat_post,
                              ue_pos_cov_post=ue_pos_cov_post)
@@ -889,14 +893,14 @@ class SimulationEnvironment:
                                        orientation=orientation))
 
         # Check if a radio map with the same AP position is available
-        scene_name = self._scene_name or "default_room"
+        scene_name = self._scene_name or self._mesh_name.removesuffix(".ply")
         rm_filename = os.path.join(self.scene_folder, "rm", f"{scene_name}_AP{self.c.num_ap}_M{self.c.num_ant}")
         if p.check_dataclass(rm_filename, self.geo, keys=["ap_location"]):
             self.rm = p.load_radiomap(rm_filename)
         else:
             # Copy scene to compute RadioMap considering AP as transmitters (working due to symmetric UL/DL channel)
             scene_for_rm = self._build_base_scene(self._scene_name)[0]
-            scene_for_rm.tx_array = self.scene.tx_array
+            scene_for_rm.tx_array = self.scene.rx_array
             for l in range(self.L):
                 scene_for_rm.add(rt.Transmitter(name=f"ap_{l}",
                                                 position=self.geo.ap_location[l],
@@ -930,7 +934,7 @@ class SimulationEnvironment:
             p.save_radiomap(rm_filename, self.rm, self.geo.ap_location)
 
     def _build_base_scene(self, scene_name: str | None,
-                          area_coordinates: list | np.ndarray | None = None) -> tuple[rt.Scene, list | np.ndarray]:
+                          area_coordinates: list | np.ndarray | None = None) -> tuple[rt.Scene, list | np.ndarray, str | None]:
         """Build the base propagation scene (loaded from file, or a bare floor), with
         frequency/bandwidth set -- independent of any Tx/Rx additions. Called twice: once
         for `self.scene`, once (fresh) for the AP-side radio map scene in `_setup_scene`.
@@ -940,13 +944,14 @@ class SimulationEnvironment:
             try:
                 scene = rt.load_scene(os.path.join(self.scene_folder, scene_name))
             except FileNotFoundError:
-                print(f"Scene {scene_name} not found. Checking if a default scene has the same name.")
+                # print(f"Scene {scene_name} not found. Checking if a default scene has the same name.")
                 scene = rt.load_scene(getattr(rt.scene, scene_name))
-                print(f"Default scene {scene_name} loaded.")
+                # print(f"Default scene {scene_name} loaded.")
             except Exception as e:
                 raise e
                 # TODO: the following works on the ConvexHull, while it should account for holes in concave polygon.
             area_coordinates = ut.scene_area_coordinates(scene)  # Generate base polygon coordinates from scene
+            mesh_name = None
         # Generate default area coordinate if reached here
         else:
             if area_coordinates is None:
@@ -954,19 +959,23 @@ class SimulationEnvironment:
                 first_quadrant = p.ROOM_SIDE / 2 * np.array([1, 1, 0])
                 # Order is left-top first, then clockwise.
                 area_coordinates = np.array([[-1, 1, 0], [1, 1, 0], [1, -1, 0], [-1, -1, 0]]) * first_quadrant
+                # Default name
+                mesh_name = f"default_room_{p.ROOM_SIDE:02d}m"
+            else:
+                mesh_name = "custom_points" + "_".join([f"{int(x):02d}" for x in area_coordinates[:, :2].flatten()])
             scene = rt.load_scene()  # Empty sionna.rt scene
             # Generate just the floor by meshing the Polygon of the Area
             floor_material = rt.ITURadioMaterial("floor-material", "concrete",
                                                  thickness=0.2, color=(0.1, 0.1, 0.1))
-            floor_path = self._build_default_floor_mesh(area_coordinates)  # already cached to disk after first call
-            floor = rt.SceneObject(fname=floor_path, name="floor", radio_material=floor_material)
+            mesh_path = self._build_default_floor_mesh(area_coordinates, mesh_name)  # already cached to disk after first call
+            floor = rt.SceneObject(fname=mesh_path, name="floor", radio_material=floor_material)
             scene.edit(add=[floor])
 
             scene.frequency = self.wireless.carrier
             scene.bandwidth = self.wireless.freqs[-1] - self.wireless.freqs[0]
-        return scene, area_coordinates
+        return scene, area_coordinates, mesh_name
 
-    def _build_default_floor_mesh(self, area_coordinates: list | np.ndarray) -> str:
+    def _build_default_floor_mesh(self, area_coordinates: list | np.ndarray, filename: str = "") -> str:
         """Triangulate a polygon generated from `area_coordinates` and export it as a flat mesh (.ply) at
         z=0, so it can be loaded as a Sionna RT floor SceneObject. Requires `trimesh`.
 
@@ -975,7 +984,9 @@ class SimulationEnvironment:
         """
         mesh_folder = os.path.join(self.scene_folder, "meshes")
         # Check if meshes already exist first
-        mesh_path = os.path.join(mesh_folder, "_default_room_floor.ply")
+        mesh_path = os.path.join(mesh_folder, filename)
+        if not mesh_path.endswith(".ply"):
+            mesh_path += ".ply"
         if os.path.exists(mesh_path):
             return mesh_path
         else:
