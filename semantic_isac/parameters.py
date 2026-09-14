@@ -20,8 +20,8 @@ NUM_AP = 3
 NUM_ANT = 2
 NUM_UE = 16
 NUM_EP = int(1e3)
-ROOM_SIDE = 100             # [m]
-VEL_STD = 4                 # [m/s]
+ROOM_SIDE = 200             # [m]
+VEL_STD = 14                 # [m/s]
 REGIONS = 16
 UE_HEIGHT = 1.5             # [m]
 
@@ -31,13 +31,13 @@ NUMEROLOGY = 0
 NUM_SCS = 108
 NUM_SYM = 14
 NUM_SLOTS = 5 * 2 ** NUMEROLOGY
-NUM_FRAMES = 30
+NUM_FRAMES = 50
 PPM_XO = 5 / 50                # Residual PPM after initial synchronization from PRACH
 PPM_OCXO = 0.5 / 50            # Residual PPM after initial synchronization
 DATASIZE_AVG = 2048
 QUEUE_MAX = int(10 * DATASIZE_AVG)
 QUEUE_RELIABILITY = 0.95         # 1 - epsilon in the paper
-UE_POW = ut.dbm2watt(0)
+UE_POW = ut.dbm2watt(-10)
 
 # DEFAULT FOLDERS
 FIGURE_FOLDER = os.path.join(os.getcwd(), "figs")
@@ -56,8 +56,8 @@ RT_PARAM = {
     "diffraction": False,
     "edge_diffraction": False,
     "synthetic_array": False,
-    "samples_per_tx": int(1e8),
-    "cell_size": (1., 1.),
+    "samples_per_tx": int(5*1e8),
+    "cell_size": (.5, .5),
 }
 
 scattering_coefficient_dict = {
@@ -85,15 +85,15 @@ def common_parser():
 
     parser.add_argument("--ra_method", type=str, default="", help="Method to use for RA simulation")
     parser.add_argument('--parallel', action='store_true', help="Enable parallel processing")
-    parser.add_argument('--savedir', type=str, default=DATA_FOLDER, help="Optional path to save results in")
+    parser.add_argument('--savesubdir', type=str, default="", help="Optional name of the subdirectory to save results in")
     parser.add_argument('--verbose', action='store_true', help="Verbose outputs")
-    parser.add_argument("--overwrite", action='store_true', help="Overwrite results eve if already present in the savedir")
+    parser.add_argument("--overwrite", action='store_true', help="Overwrite results  if already present in the savedir")
     parser.add_argument("--concurrent", type=int, default=1, help="Set the number of concurrent scripts run")
     parser.add_argument("--gpu", action='store_true', help="Set the GPU usage")
 
     args = parser.parse_args()
 
-    return args.ra_method, args.parallel, args.savedir, args.verbose, args.overwrite, args.concurrent, args.gpu
+    return args.ra_method, args.parallel, args.savesubdir, args.verbose, args.overwrite, args.concurrent, args.gpu
 
 ## CLASSES
 @dataclass
@@ -198,8 +198,9 @@ class WirelessParams:
         # Compute slot_time from numerology
         self.slot_time = 1e-3 / 2 ** self.numerology
 
-        # Compute frame_time from slot_time and S (assuming 4 DL slots)
-        self.frame_time = self.slot_time * (self.c.num_slots + 4)
+        # Compute frame_time from slot_time and S (assuming the same number of DL slots)
+        guard = 0.09
+        self.frame_time = self.slot_time * (2 * self.c.num_slots) + guard
 
         # Compute subcarrier spacing
         self.sc_spacing = 15e3 * 2 ** self.numerology
@@ -239,12 +240,14 @@ class WirelessParams:
             self.ap_power = np.ones(self.c.num_ap) * self.ap_power
 
         # Compute thermal noise
-        self.nob_ap = ut.thermal_noise(self.bw, noise_figure=5.0)
+        self.nob_ap = ut.thermal_noise(self.bw, noise_figure=9.0)
         self.nob_ue = ut.thermal_noise(self.bw, noise_figure=9.0)
 
         # Compute datasize and queue
         if self.avg_datasize is None:
             self.avg_datasize = DATASIZE_AVG * np.ones(self.c.num_ue, dtype=int)
+        elif isinstance(self.avg_datasize, float):
+            self.avg_datasize = np.ones(self.c.num_ue) * self.avg_datasize
         if self.queue_max is None:
             self.queue_max = QUEUE_MAX * np.ones(self.c.num_ue, dtype=np.int32)
         if self.queue_reliability is None:
@@ -333,6 +336,10 @@ class WirelessParams:
     def sample_new_data(self):
         """Generate new data [bits] sampling from the defined distribution."""
         return self.traffic_pdf.rvs(scale=self.avg_datasize, random_state=self.c.rng).astype(int)
+
+    def datasize_from_load(self, load_factor: float, avg_se: float) -> float:
+        """Initialize the arrival rate for a given number of UEs, slots, symbols, and average data size."""
+        return arrival_rate_init(self.c.num_ue, self.c.num_slots, avg_se, self.bw, self.slot_time, load_factor)
 
     @property
     def ap_power_dbm(self):
@@ -848,4 +855,6 @@ def load_radiomap(filepath: str):
         return FakeRadioMap(**data)
 
 
-
+def arrival_rate_init(num_ue: int, num_slots: int, avg_se: float,
+                      bw: float, slot_time: float = 1e-3, rho: float= 0.75):
+    return rho * num_slots / num_ue * avg_se * bw * slot_time
