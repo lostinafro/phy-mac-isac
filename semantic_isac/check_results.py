@@ -53,7 +53,7 @@ def output_results(num_vec: list | np.ndarray, datapath: str,
                 n_dict[method] = load_episodes(data_folder, method, range(100), results_labels)
                 field_cdfs = {}
                 for field_label in cdf_labels:
-                    if field_label in ["misclassification", "risk_predicted", "risk_hat"]:
+                    if field_label in ["risk_predicted"]:
                         sample = n_dict[method][field_label][:, :-1].sum(axis=-1).flatten()
                         sample = sample[~np.isnan(sample)]
                         field_cdfs[field_label] = stats.ecdf(sample)
@@ -71,18 +71,18 @@ def output_results(num_vec: list | np.ndarray, datapath: str,
 
 if __name__ == "__main__":
     # Setting the results to read
-    results_labels = ["ue_slot_map", "large_scale", "large_scale_hat", "queue", "delta_queue",
+    results_labels = ["avg_datasize", "area_coordinates", "ue_slot_map", "large_scale", "large_scale_hat", "queue", "delta_queue",
                       "se_achievable", "se_set", "sinr", "efim_oracle", "efim_predicted",
-                      "misclassification", "risk_predicted", "risk_hat"]
+                      "misclassification", "risk_hat"]
     # Setting the results for cdf computation
-    cdf_labels = ["queue", "se_achievable", "se_set", "misclassification", "risk_predicted", "risk_hat"]
+    cdf_labels = ["queue", "se_achievable", "se_set", "misclassification", "risk_hat"]
     colors =  dict(zip(available_methods.keys(), [ "#ff0000", "#ffd700", "#ffb14e", "#fa8775", "#cd34b5", "#0000ff" ]))
 
 
     # Other parameters
-    num_ue_vec = p.NUM_SLOTS * np.arange(1, 6)
+    num_ue_vec = np.array([12, 18, 27, 36, 54])
     ra_labels = list(available_methods.keys())
-    data_path = os.path.join(os.getcwd(), "data")
+    data_path = os.path.join(p.DATA_FOLDER, "2026-09-14", "se_test")
 
     big_dict, ra_cdfs = output_results(num_ue_vec, data_path, ra_labels, results_labels, cdf_labels, suffix="_vs_ue")
 
@@ -103,6 +103,7 @@ if __name__ == "__main__":
                     print(f"Error computing CDF for {method} and {field_label}: {e}")
             if ax[i, u].get_legend_handles_labels()[1]:  # If there is at least a label, print the legend
                ax[i, u].legend()
+            ax[i, u].grid(True)
             ax[i, u].set_xlabel(field_label)
             ax[i, u].set_ylabel("CDF")
     fig.tight_layout()
@@ -110,6 +111,15 @@ if __name__ == "__main__":
     # Save figure
     filename = os.path.join(data_path, "cdf_vs_ue")
     fig.savefig(filename + '.jpg', dpi=300, bbox_inches='tight')
+
+    for field_label in cdf_labels:
+        print(f"{field_label}".upper())
+        for method in ra_labels:
+            avg = [float(np.nanmean(big_dict[u][method][field_label][:, :-1])) for u, _ in enumerate(num_ue_vec)]
+            prob_95 = [float(ra_cdfs[u][method][field_label].cdf.quantiles[np.where(ra_cdfs[u][method][field_label].cdf.probabilities > 0.95)[0][0]]) for u, _ in enumerate(num_ue_vec)]
+            print(f"\tAvg. for {method}: {avg}")
+            print(f"\t95% for {method}: {prob_95}")
+
 
     a = 42
 
