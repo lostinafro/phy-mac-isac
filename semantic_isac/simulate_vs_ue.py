@@ -9,11 +9,10 @@ import warnings
 import resource_allocation as ra
 import utils as ut
 import parameters as p
-from environment import run_episode
+from environment import run_episode, results_labels
 
 
 warnings.filterwarnings("ignore", category=RuntimeWarning)
-results_label = ["avg_se_achievable", "avg_queue", "avg_misclassification", "avg_risk_hat"]
 
 def load_summary_from_npz(filepath: str, results_label: list[str]) -> dict:
     """Reconstruct a run_episode-style summary dict from an already-saved .npz,
@@ -65,7 +64,7 @@ if __name__ == "__main__":
 
         # Saving parameters
         prefix = ra_label + "_vs_ue"
-        data_shape = (len(num_ue_vec), len(results_label))
+        data_shape = (len(num_ue_vec), len(results_labels))
         avg_results, filename = ut.check_data(data_shape, prefix, data_folder, overwrite_flag=overwrite)
 
         # Start processing
@@ -87,7 +86,7 @@ if __name__ == "__main__":
                 os.makedirs(save_ep_dirpath, exist_ok=True)
 
                 # Check maximum load for non-trivial/non_explosive queues
-                avg_datasize = p.arrival_rate_init(num_ue, p.NUM_SLOTS, 2, p.NUM_SCS * 15e3 * 2 ** p.NUMEROLOGY)
+                avg_datasize, queue_max = p.arrival_rate_init(avg_se=2, num_ue=num_ue)
 
                 ## Check which episodes have already been run
                 results = []
@@ -96,7 +95,7 @@ if __name__ == "__main__":
                     out_path = os.path.join(save_ep_dirpath, f"{ra_label}_ep{ep:04d}.npz")
                     if not overwrite and os.path.exists(out_path):
                         try:
-                            results.append(load_summary_from_npz(out_path, results_label))
+                            results.append(load_summary_from_npz(out_path, results_labels))
                             continue
                         except Exception as e:
                             print(f"\tWarning: couldn't reuse cached episode {ep} ({out_path}): {e} -- re-running it.")
@@ -104,7 +103,8 @@ if __name__ == "__main__":
                                                env_kwargs={"num_ue": int(num_ue),
                                                            "env_dirpath": env_dirpath,
                                                            "debugging": False,
-                                                           "avg_datasize": avg_datasize},
+                                                           "avg_datasize": avg_datasize,
+                                                           "queue_max": queue_max},
                                                metrics_dirpath=save_ep_dirpath,
                                                gpu_guard=gpu_semaphore, verbose=verbose))
 
@@ -125,9 +125,9 @@ if __name__ == "__main__":
                             results.append(run_episode(**ep_kw))
 
                 # Average the scalar summaries across episodes
-                avg_results[m] = np.array([[r[label] for label in results_label] for r in results]).mean(axis=(0, -1))
+                avg_results[m] = np.array([[r[label] for label in results_labels] for r in results]).mean(axis=(0, -1))
 
-                avg_df = pd.DataFrame(avg_results, columns=results_label)
+                avg_df = pd.DataFrame(avg_results, columns=results_labels)
                 avg_df.insert(0, "num_ue", num_ue_vec)
                 avg_df.to_csv(filename, index=False)
 

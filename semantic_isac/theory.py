@@ -138,3 +138,14 @@ def shur_complement(constant: float, a: np.ndarray, b: np.ndarray, c: np.ndarray
     cond_exp = np.log10(np.linalg.cond(d))
     shur_com = constant * (a - b @ np.linalg.inv(d) @ c)
     return shur_com, cond_exp
+
+def uatf_los_se(sum_beta: np.ndarray, snr: np.ndarray, m: np.ndarray, l: np.ndarray, pilot_fraction: float):
+    r"""Evaluate an achievable data rate obtained through use-and-then-forget-bound.
+
+      :param beta: np.ndarray (S, U, L) collecting the large scale fading for each AP, e.g., :math:`[\beta_{u,\ell}] \forall \ell \in\mathcal{L}`
+      :param pilot_length: int, the length of the pilot sequence used for channel estimation.
+      """
+
+    # Compute with the specific environment formula
+    se = np.log2(1 + snr * m * sum_beta ** 2 / (2 * sum_beta + l / snr))
+    return np.squeeze((1 - pilot_fraction) * se)

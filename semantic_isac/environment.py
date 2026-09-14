@@ -26,7 +26,7 @@ class SimulationEnvironment:
     save vehicle data3 to a CSV file, set up a simulation scene, and retrieve scene information and velocities.
 
     """
-    # TODO: passing c as an argument dumbdumb!
+    # TODO: passing c and wireless as an argument dumbdumb!
     def __init__(self, episode : int,
                  num_ap : int = p.NUM_AP,
                  num_ant_h : int = p.NUM_ANT,
@@ -40,6 +40,7 @@ class SimulationEnvironment:
                  carrier_freq: float = p.CARRIER,
                  ue_power: float = p.UE_POW,
                  avg_datasize: float = p.DATASIZE_AVG,
+                 queue_max: int = p.QUEUE_MAX,
                  lo_ppm: float | np.ndarray = p.PPM_XO,
                  scene_name: str | None = None,
                  scene_dirpath: str = p.SCENE_FOLDER,
@@ -135,6 +136,7 @@ class SimulationEnvironment:
             "lo_ppm": lo_ppm,
             "ue_power": ue_power,
             "avg_datasize": avg_datasize,
+            "queue_max": queue_max,
         }
         self.wireless = p.WirelessParams(**wir_kwargs, c=self.c)  # Parameters collecting wireles variables
 
@@ -366,7 +368,8 @@ class SimulationEnvironment:
         oracle_se = self.performance.eval_achievable_se(beta.transpose(), len(self.ra_method.pilot_ofdm_symbol_indices()))
 
         # Compute predicted eFIM and rate with estimated values (shape (U, d, d))
-        beta_hat = self.estimate_gain_dl(self.estimate.ue_pos_hat_prio[self.frame])
+        # Using 3dB margin to account for UL/DL mismatches
+        beta_hat = self.estimate_gain_dl(self.estimate.ue_pos_hat_prio[self.frame]) / 2
         predicted_efim = self.performance.eval_efim(snr, self.estimate.ue_pos_hat_prio[self.frame], beta_hat[..., np.newaxis].transpose())
         predicted_se = self.performance.eval_achievable_se(beta_hat[..., np.newaxis].transpose(), len(self.ra_method.pilot_ofdm_symbol_indices()))
 
@@ -1128,12 +1131,16 @@ def run_episode(episode: int,
         summary = {
             "save_path": save_path,
             "avg_se_achievable": np.nanmean(env.metrics.se_achievable[:-1], axis=0),
+            "avg_se_set": np.nanmean(env.metrics.se_set[:-1], axis=0),
             "avg_queue": np.nanmean(env.metrics.queue[:-1], axis=0),
             "avg_misclassification": np.nanmean(env.metrics.misclassification[:-1], axis=0),
             "avg_risk_predicted": np.nanmean(env.metrics.risk_predicted[:-1], axis=0),
             "avg_risk_hat": np.nanmean(env.metrics.risk_hat[:-1], axis=0),
         }
         return summary
+
+results_labels = ["avg_se_achievable", "avg_se_set", "avg_queue", "avg_misclassification", "avg_risk_predicted", "avg_risk_hat"]
+
 
 if __name__ == "__main__":
     num_ue = 6
