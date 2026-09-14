@@ -19,7 +19,8 @@ class TrackerBase(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    def posterior(self, obs: np.ndarray, x_pri: np.ndarray, P_pri: np.ndarray, obs_idx: np.ndarray | None = None) -> tuple:
+    def posterior(self, obs: np.ndarray, x_pri: np.ndarray, P_pri: np.ndarray, obs_idx: np.ndarray | None = None,
+                  obs_cov: np.ndarray | None = None) -> tuple:
         """Update step.
 
         :returns: tuple (x_post, P_post).
@@ -93,7 +94,8 @@ class LinearKalmanTracker(TrackerBase):
         P_pri = self.F @ P @ np.matrix_transpose(self.F) + self.Q             # broadcasts over leading dims
         return x_pri, P_pri
 
-    def posterior(self, obs: np.ndarray, x_pri: np.ndarray, P_pri: np.ndarray, obs_idx: np.ndarray | None = None) -> tuple:
+    def posterior(self, obs: np.ndarray, x_pri: np.ndarray, P_pri: np.ndarray, obs_idx: np.ndarray | None = None,
+                  obs_cov: np.ndarray | None = None) -> tuple:
         """Update step: standard Kalman correction given a new observation.
 
         :param obs: np.ndarray, shape (..., Z_obs), new observation.
@@ -101,11 +103,15 @@ class LinearKalmanTracker(TrackerBase):
         :param P_pri: np.ndarray, shape (..., Z, Z), prior covariance (from `prior`).
         :param obs_idx: np.ndarray, shape (..., Z_obs), index vector of observation available. Needed to compute the
             posteriors for elements where an observation is obtained and keep the other posterior equal to the prior
+        :param obs_cov: np.ndarray, shape (..., Z_obs, Z_obs), observation covariance. Needed to compute the
+            posteriors for elements where an observation is obtained and keep the other posterior equal to the prior
 
         :returns: tuple (x_post (..., Z), P_post (..., Z, Z)).
         """
         if obs_idx is None:
             obs_idx = np.ones(self.H.shape[:-2], dtype=bool)
+        if obs_cov is None:
+            obs_cov = self.R[obs_idx]
 
         # processing for posteriors
         x_post_out = np.asarray(x_pri).copy()
@@ -115,7 +121,7 @@ class LinearKalmanTracker(TrackerBase):
         x_pri_col = x_pri[..., :, np.newaxis]
 
         innovation = obs[..., :, np.newaxis] - self.H[obs_idx] @ x_pri_col      # (..., Z_obs, 1)
-        S = self.H[obs_idx] @ P_pri @ np.matrix_transpose(self.H[obs_idx]) + self.R[obs_idx]                        # (..., Z_obs, Z_obs)
+        S = self.H[obs_idx] @ P_pri @ np.matrix_transpose(self.H[obs_idx]) + obs_cov               # (..., Z_obs, Z_obs)
         K = P_pri @ np.matrix_transpose(self.H[obs_idx]) @ np.linalg.inv(S)                        # (..., Z, Z_obs)
 
         x_post = np.squeeze(x_pri_col + K @ innovation, axis=-1)       # (..., Z)
