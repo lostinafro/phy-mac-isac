@@ -165,14 +165,14 @@ class ResourceAllocationBase(ABC):
         bound_normal = np.zeros((self.c.num_ue, 3))
         for r in range(self.c.num_regions):
             ue_mask = self.estimate.ue_region_hat[frame] == r
-            bound_dist[ue_mask] = ut.distance_to_boundary(self.estimate.ue_pos_hat_prio[frame, ue_mask],
-                                                              self.geo.semantic_regions.geoms[r])
-            bound_normal[ue_mask] = ut.boundary_normal(self.estimate.ue_pos_hat_prio[frame, ue_mask],
-                                                           self.geo.semantic_regions.geoms[r])
-        risk0 = ut.qfun(bound_dist / np.squeeze(np.matrix_transpose(bound_normal[..., np.newaxis])
-                                                @ covariance_pri @ bound_normal[..., np.newaxis]))
-        risk1 = ut.qfun(bound_dist / np.squeeze(np.matrix_transpose(bound_normal[..., np.newaxis])
-                                                 @ covariance_post @ bound_normal[..., np.newaxis]))
+            if np.any(ue_mask):
+                bound_dist[ue_mask], bound_normal[ue_mask] = ut.boundary_dist_normal(self.estimate.ue_pos_hat_prio[frame, ue_mask],
+                                                                                     self.geo.semantic_regions.geoms[r])
+
+        risk0 = ut.qfun(bound_dist / np.squeeze(np.sqrt(np.matrix_transpose(bound_normal[..., np.newaxis])
+                                                        @ covariance_pri @ bound_normal[..., np.newaxis])))
+        risk1 = ut.qfun(bound_dist / np.squeeze(np.sqrt(np.matrix_transpose(bound_normal[..., np.newaxis])
+                                                        @ covariance_post @ bound_normal[..., np.newaxis])))
         delta_risk = risk0 - risk1
 
         return risk0, risk1, delta_risk
