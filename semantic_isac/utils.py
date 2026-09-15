@@ -27,15 +27,21 @@ import inspect
 
 # TODO: Maybe split this in multiple files?
 
-def boundary_normal(points: np.ndarray, polygon: Polygon, eps: float = 1e-6) -> np.ndarray:
+def boundary_dist_normal(points: np.ndarray, polygon: Polygon, eps: float = 1e-6,
+                         exclude_polygon: Polygon | None = None,
+                         exclude_tol: float = 1e-6) -> tuple[np.ndarray, np.ndarray]:
     """Outward unit normal of the polygon boundary at the point nearest each query point --
     fully vectorized (all points against all boundary segments at once).
 
     :param points: np.ndarray, shape (N, 3), (x, y, z) query points -- z is ignored.
     :param polygon: shapely.geometry.Polygon.
     :param eps: small offset used to disambiguate the outward side.
+    :param exclude_polygon: shapely.geometry.Polygon, optional. If provided, segments lying entirely on its boundary
+        will be excluded from the computation.
+    :param exclude_tol: float, optional. Tolerance for considering a point to lie on the boundary of exclude_polygon.
 
-    :returns: np.ndarray, shape (N, 3), unit (x, y, 0.) outward normal vectors.
+    :returns: tuple[np.ndarray (N,), np.ndarray (N, 3)], bein the latter the minimum distance between points and the
+        boundary and the former the outward normal vector with unit (x, y, 0.)
     """
     rings = [np.array(polygon.exterior.coords)] + [np.array(r.coords) for r in polygon.interiors]
     # Collect all segments while removing the third dimension
@@ -45,7 +51,17 @@ def boundary_normal(points: np.ndarray, polygon: Polygon, eps: float = 1e-6) -> 
     seg_len2 = np.sum(seg_vec ** 2, axis=1)
     seg_len2_safe = np.where(seg_len2 == 0, 1.0, seg_len2)
 
+    # Mask out segments that lie entirely on exclude_polygon's boundary
+    excluded_mask = np.zeros(seg_start.shape[0], dtype=bool)
+    if exclude_polygon is not None:
+        ex_boundary = exclude_polygon.boundary
+        start_pts = sha.points(seg_start[:, 0], seg_start[:, 1])
+        end_pts = sha.points(seg_end[:, 0], seg_end[:, 1])
+        start_on = sha.distance(start_pts, ex_boundary) <= exclude_tol
+        end_on = sha.distance(end_pts, ex_boundary) <= exclude_tol
+        excluded_mask = start_on & end_on  # both endpoints on it -> whole segment lies on it
 
+    # Project points on the plane
     xy = points[:, :2]                                     # (N, 2)
 
     # Project every point onto every segment at once: (N, R, 2)
@@ -53,10 +69,15 @@ def boundary_normal(points: np.ndarray, polygon: Polygon, eps: float = 1e-6) -> 
     t = np.clip(np.sum(w * seg_vec[None, :, :], axis=2) / seg_len2_safe[None, :], 0.0, 1.0)  # (U, N)
     proj = seg_start[None, :, :] + t[:, :, None] * seg_vec[None, :, :]                         # (U, N, 2)
     dist2 = np.sum((proj - xy[:, None, :]) ** 2, axis=2)                                       # (U, N)
+    dist2[:, excluded_mask] = np.inf    # Excluding segments from the excluded polygon
 
+    # Take index of nearest segment and nearest boundary point
     seg_idx = np.argmin(dist2, axis=1)                       # (N,)
     nxy = proj[np.arange(len(xy)), seg_idx]                  # (N, 2) -- nearest boundary point
+    # Compute min distance
+    min_distance = np.linalg.norm(nxy - xy, axis=-1)
 
+    # Take the tangent vector and compute the possible candidate for the normal vector
     tangent = seg_vec[seg_idx]                                # (N, 2)
     t_norm = np.linalg.norm(tangent, axis=1, keepdims=True)
     t_norm[t_norm == 0] = 1.0
@@ -69,7 +90,7 @@ def boundary_normal(points: np.ndarray, polygon: Polygon, eps: float = 1e-6) -> 
     inside = sha.contains(polygon, test_points)            # (N,) bool, broadcasts one polygon vs many points
 
     cand = np.hstack([cand, np.zeros((cand.shape[0], 1))])      # Coming back to 3 dimensions (0 for z)
-    return np.where(inside[:, None], -cand, cand)
+    return min_distance, np.where(inside[:, None], -cand, cand)
 
 def ue_ap_distances(ue_position: np.ndarray, ap_position: np.ndarray) -> np.ndarray:
     """Compute the distances between UEs and APs. It assumes UEs position is an array of (..., U, d) while AP position
@@ -181,8 +202,6 @@ def move_ues(ue_pos,
     # Return new the position
     return new_pos
 
-def std_bar(total_iteration):
-    return tqdm(total_iteration, file=sys.stdout, leave=False, ncols=60, ascii=True)
 
 def check_data(data_shape: tuple, prefix: str, folder: str, overwrite_flag: bool = False):
     filename = os.path.join(folder, prefix + '.csv')
@@ -797,10 +816,10 @@ def printplot(fig: plt.Figure = None,
 
 # Progress bars
 def std_progressbar(total_iteration, **kwargs):
-    return tqdm(total_iteration, file=sys.stdout, leave=False, ncols=60, ascii=True, **kwargs)
+    return tqdm(total_iteration, file=sys.stdout, leave=False, ascii=True, **kwargs)
 
 def fixed_progressbar(total_iteration, **kwargs):
-    return tqdm(total_iteration, file=sys.stdout, leave=True, ncols=60, ascii=True, **kwargs)
+    return tqdm(total_iteration, file=sys.stdout, leave=True, ascii=True, **kwargs)
 
 ## Folder management
 def standard_output_dir(subdirname: str) -> str:
