@@ -22,7 +22,7 @@ NUM_UE = 12
 NUM_EP = int(1e3)
 ROOM_SIDE = 200             # [m]
 VEL_STD = 14                 # [m/s]
-REGIONS = 8
+REGIONS = 16
 UE_HEIGHT = 1.5             # [m]
 
 # Wireless
@@ -31,7 +31,7 @@ NUMEROLOGY = 0
 NUM_SCS = 108
 NUM_SYM = 14
 NUM_SLOTS = 5 * 2 ** NUMEROLOGY
-NUM_FRAMES = 500
+NUM_FRAMES = 100
 PPM_XO = 5 / 50                # Residual PPM after initial synchronization from PRACH
 PPM_OCXO = 0.5 / 50            # Residual PPM after initial synchronization
 DATASIZE_AVG = 2048
@@ -44,7 +44,6 @@ FIGURE_FOLDER = os.path.join(os.getcwd(), "figs")
 DATA_FOLDER = os.path.join(os.getcwd(), "data")
 SCENE_FOLDER = os.path.join(os.getcwd(), "scenes")
 MESH_FOLDER = os.path.join(SCENE_FOLDER, "meshes")
-ENV_FOLDER = os.path.join(os.getcwd(), "envs")
 
 # RayTracer and RadioMap parameters
 RT_PARAM = {
@@ -630,6 +629,8 @@ class EstimationParams:
                     attr[frame] = value
                     if key in ("ue_pos_hat_prio", "ue_pos_hat_post"):
                         self.ue_region_hat[frame] = self.geo.in_which_region(value)
+                        out_of_regions =  self.ue_region_hat[frame] == -1
+                        self.ue_region_hat[frame, out_of_regions] = self.ue_region_hat[frame - 1, out_of_regions]
                 else:
                     # If the attribute is not an array, update it directly
                     setattr(self, key, value)
@@ -655,6 +656,7 @@ class Metrics:
     large_scale: np.ndarray = field(default=None, init=False)
     large_scale_hat: np.ndarray = field(default=None, init=False)
     # Communication parameters
+    gen_bit: np.ndarray = field(default=None, init=False)
     queue: np.ndarray = field(default=None, init=False)
     delta_queue: np.ndarray = field(default=None, init=False)
     sinr: np.ndarray = field(default=None, init=False)
@@ -683,6 +685,7 @@ class Metrics:
         self.ue_slot_map = np.zeros((self.c.num_frames + 1, self.c.num_slots, self.c.num_ue), dtype=bool)
         self.large_scale = np.zeros((self.c.num_frames + 1, self.c.num_ap, self.c.num_ue, ))
         self.large_scale_hat = np.zeros((self.c.num_frames + 1, self.c.num_ap, self.c.num_ue))
+        self.gen_bit = np.zeros((self.c.num_frames + 1, self.c.num_ue))
         self.queue = np.zeros((self.c.num_frames + 1, self.c.num_ue), dtype=np.int32)
         self.delta_queue = np.zeros((self.c.num_frames + 1, self.c.num_ue), dtype=np.int32)
         self.se_achievable = np.nan * np.zeros((self.c.num_frames + 1, self.c.num_ue))
