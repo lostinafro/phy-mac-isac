@@ -60,7 +60,6 @@ if __name__ == "__main__":
     for ra_label in ra_methods:
         # Set RA method
         ra_method = ra.available_methods[ra_label]
-        print(f"Processing {ra_label} method")
 
         # Saving parameters
         prefix = ra_label + "_vs_regions"
@@ -71,7 +70,7 @@ if __name__ == "__main__":
         for m, num_regions in enumerate(num_regions_vec):
             if overwrite or np.any(np.isnan(avg_results[m])):
                 # Info about variable under test
-                print(f"\t{prefix} with R={num_regions}")
+                print(f"{prefix} with R={num_regions}")
 
                 ## CPU/GPU Performances
                 # Setting up maximum no. of workers and GPU semaphore to avoid oversubscription of CPU/GPU memory
@@ -106,7 +105,8 @@ if __name__ == "__main__":
                                                            "avg_datasize": avg_datasize,
                                                            "queue_max": queue_max},
                                                metrics_dirpath=save_ep_dirpath,
-                                               gpu_guard=gpu_semaphore, verbose=verbose))
+                                               gpu_guard=gpu_semaphore, verbose=verbose,
+                                               msg=f"RA: {ra_label} - R={num_regions:02d} - Episode: {ep:02d}/{num_episodes - 1:02d}"))
 
                 print(f"\t{len(results)}/{num_episodes} episodes already done, running {len(episode_kwargs)} more.")
 
@@ -125,7 +125,7 @@ if __name__ == "__main__":
                             results.append(run_episode(**ep_kw))
 
                 # Average the scalar summaries across episodes
-                avg_results[m] = np.array([[r[label] for label in results_labels] for r in results]).mean(axis=(0, -1))
+                avg_results[m] = np.nanmean(np.array([[r[label] for label in results_labels] for r in results]), axis=(0, -1))
 
                 avg_df = pd.DataFrame(avg_results, columns=results_labels)
                 avg_df.insert(0, "num_ue", num_regions_vec)
