@@ -204,6 +204,9 @@ class SimulationEnvironment:
         self.frame = -1             # Denote the current number of the frame
         self.frame_sync = 0         # Denote the last frame in which PRACH synchronization was performed
 
+        # SE MARGIN
+        self.se_margin = np.ones((self.c.num_frames, self.U)) * .9
+
     def setup_modules(self,
                       ra_algorithm: ra.ResourceAllocationBase,
                       transmission_module: TransmissionBase,
@@ -295,6 +298,7 @@ class SimulationEnvironment:
         # instantiate a Gaussian covariance with 99.7% confidence interval equal to the ellipse.
         mean, covariance = ut.get_gaussian_from_polygon(self.geo.environment_shape)
         init_pos_hat = np.repeat(mean[np.newaxis], self.U, axis=0)
+        init_pos_hat[:, 2] = p.UE_HEIGHT if init_ue_pos is None else init_ue_pos[:, 2]
         init_cov_hat = np.repeat(covariance[np.newaxis], self.U, axis=0)
 
         self.estimate.update(self.frame,
@@ -407,8 +411,12 @@ class SimulationEnvironment:
         ### Update queues
         # Checking SE achievability
         se_achievable = se_eff[slot_idx, ue_idx]
-        se_per_scheduled_ue = predicted_se[ue_idx] * .9
+        se_per_scheduled_ue = predicted_se[ue_idx] * self.se_margin[self.frame, ue_idx]
         se_per_scheduled_ue[se_per_scheduled_ue > se_achievable] = 0.
+        # Re-init margin for UE with achievable SE while reducing margin for UE with unachievable SE
+        if self.frame < self.c.num_frames - 1:
+            self.se_margin[self.frame + 1:, ue_idx[se_per_scheduled_ue > 0.]] /= self.se_margin[0, ue_idx[se_per_scheduled_ue > 0.]]
+            self.se_margin[self.frame + 1:, ue_idx[se_per_scheduled_ue == 0.]] *= self.se_margin[0, ue_idx[se_per_scheduled_ue == 0.]]
 
         # Taking the amount of bits transmitted and update the queue
         bits_tx = np.asarray(np.floor(se_per_scheduled_ue * self.wireless.bw * self.wireless.slot_time), dtype=np.int32)
@@ -428,6 +436,8 @@ class SimulationEnvironment:
                              ue_pos_hat_post=ue_pos_hat_post,
                              ue_pos_cov_post=ue_pos_cov_post)
 
+        misclassified = self.geo.ue_region[self.frame] != self.estimate.ue_region_hat[self.frame]
+
         ### Evaluate Metrics
         self.metrics.update(self.frame, ue_idx,
                             queue=queue,
@@ -440,31 +450,41 @@ class SimulationEnvironment:
                             se_oracle=oracle_se[ue_slot_map],
                             efim_oracle=oracle_efim,
                             efim_predicted=predicted_efim,
-                            misclassification=self.geo.ue_region[self.frame] != self.estimate.ue_region_hat[self.frame],
+                            misclassification=misclassified,
                             risk_predicted_full=risk_predicted_full,
                             risk_predicted=risk_predicted,
                             risk_hat=risk_hat,
                             ue_slot_map=ue_slot_map,
                             )
         # Print errors
-        every = 5
-        if self.debug and not (self.frame % every):
+        every = self.c.num_frames // 10
+        if self.debug and (not (self.frame % every) or self.frame == self.c.num_frames - 1):
             if self.frame == 0:
-                every = 1
+                frame_range = np.array([-1, 0])
+            else:
+                frame_range = np.arange(self.frame - every, self.frame) + 1
             # Visualize
-            self.env_fig = self.show_environment(paths=paths)
-            self.channel_fig = self.plot_channel(channel)
-            self.env_fig.show()
-            self.channel_fig.show()
+            self.env_fig = self.show_environment(paths=paths, fig=getattr(self, "env_fig", None))
+            self.env_fig.canvas.draw_idle()
+            plt.pause(0.001)
+
+            self.channel_fig = self.plot_channel(channel, fig=getattr(self, "channel_fig", None))
+            self.channel_fig.canvas.draw_idle()
+            plt.pause(0.001)
 
             # Print starts
-            print(f"----------------------- FRAME {self.frame} ----------------------")
+            print(f"----------------------- FRAME {self.frame:03d} -------------------------")
 
             # UE movement
             for u in range(min(10, self.U)):
-                print(f"UE {u}: old_pos={self.geo.ue_location[self.frame - every, u]}, new_pos={new_pos[u]}, new_vel={new_vel[u]}")
+                msg1 = [f"{float(a):.2f}" for a in self.geo.ue_location[frame_range[0], u]]
+                msg2 = [f"{float(a):.2f}" for a in new_pos[u]]
+                msg3 = [f"{float(a):.2f}" for a in new_vel[u]]
+                print(f"UE {u}: old_pos={msg1}, new_pos={msg2}, new_vel={msg3}")
 
-            print(f"Allocated UEs are: {ue_idx}")
+            # Allocated UEs
+            msg = [f"{u:02d}" for u in np.sort(ue_idx)]
+            print(f"Allocated UEs are: {' '.join(msg)}")
 
             # Test quasi-constant beta
             beta_full = np.abs(channel) ** 2
@@ -474,35 +494,61 @@ class SimulationEnvironment:
                     print(f"Not quasi-constant beta for AP {mask[0][idx]}, UE {mask[1][idx]} and slot {mask[2][idx]}")
 
             # Compute absolute and relative error between RadioMap and RayTracer as metrics
-            beta_gt = 10 * np.log10(beta.mean(axis=-1))
-            print(f"Avg. abs RM error is: {np.mean((10*np.log10(beta_hat) - beta_gt))} [dB]")
+            beta_gt = beta.mean(axis=-1)
+            print(f"Avg. abs RM error is: {np.mean(np.abs(beta_gt - beta_hat)) / np.mean(beta_gt) * 100:.2f} %")
 
+            # Comm values
             # Check issues in the oracle if any
             unachievable_err = np.nonzero(se_achievable < oracle_se[slot_idx, ue_idx])[0]
             if len(unachievable_err) > 0:
-                print(f"Unachievable oracle rate for UE {unachievable_err}")
-            else:
-                print(f"Achievable oracle rate for all UEs")
+                print(f"ERROR: Unachievable oracle rate for UE {unachievable_err}")
 
-            # Queue statuts
+            print("\nCOMMS:")
+            msg = [f"{float(s):.2f}" for s in self.metrics.se_achievable[self.frame]]
+            print(f"UEs achievable SE is: \t{' '.join(msg)}")
+            msg = [f"{float(s):.2f}" for s in self.metrics.se_set[self.frame]]
+            print(f"UEs transmitted SE is: \t{' '.join(msg)}")
+            msg = [f"{int(q):04d}" for q in self.metrics.queue[self.frame]]
+            print(f"UEs queue status is: \t{' '.join(msg)}")
             queue_exceeded = np.nonzero(queue > self.wireless.queue_max)[0]
             if len(queue_exceeded) > 0:
-                print(f"Queue exceeded for UE {queue_exceeded}")
+                msg = [f"{int(u):02d}" for u in queue_exceeded]
+                print(f"Queue exceeded for UE \t{' '.join(msg)}")
             else:
                 print(f"Queue within limits for all UEs")
-            # Cartesian errors
-            print(f"Per UE predicted PEB is: {np.sqrt(np.linalg.trace(np.linalg.inv(predicted_efim)))}")
-            print(f"Per UE oracle PEB is: {np.sqrt(np.linalg.trace(np.linalg.inv(oracle_efim[0])))}")
-            print(f"Per UE prior PEB is: {np.sqrt(np.linalg.trace(ue_pos_cov_pri))}")
-            print(f"Per UE posterior PEB is: {np.sqrt(np.linalg.trace(ue_pos_cov_post))}")
-            # Semantic errors
-            print(f"Per UE semantic risk predicted was: {self.metrics.risk_predicted[self.frame - every:self.frame + 1].mean(0)}")
-            print(f"Per UE semantic risk approx was: {self.metrics.risk_hat[self.frame]}")
-            print(f"UEs misclassified are: {self.metrics.misclassification[self.frame]}")
-            print(f"Avg. misclassification so far: {self.metrics.misclassification[self.frame - every:self.frame + 1].mean(0)}")
+            msg = [f"{int(q):04d}" for q in self.metrics.queue[frame_range].mean(0)]
+            print(f"UEs avg. frames {frame_range[0]:02d}/{self.frame:02d} queue status is: \t{' '.join(msg)}")
+            msg = [f"{float(q) * 100:02.1f}%" for q in (self.metrics.queue[:frame_range[-1]] < self.wireless.queue_max).mean(0)]
+            print(f"UEs queue reliability up to frame {self.frame:03d}: \t{' '.join(msg)}")
 
-            print("----------------------- END FRAME ----------------------\n")
-            input("Press ENTER to continue...")
+            # Cartesian errors
+            print("\nLOCA:")
+            msg = [f"{float(peb):.2f}" for peb in np.sqrt(np.linalg.trace(np.linalg.inv(predicted_efim)))]
+            print(f"Per UE predic PEB is: \t{' '.join(msg)}")
+            msg = [f"{peb:.2f}" for peb in np.sqrt(np.linalg.trace(np.linalg.inv(oracle_efim[0])))]
+            print(f"Per UE oracle PEB is: \t{' '.join(msg)}")
+            msg = [f"{peb:.2f}" for peb in np.sqrt(np.linalg.trace(ue_pos_cov_pri))]
+            print(f"Per UE priori PEB is: \t{' '.join(msg)}")
+            msg = [f"{peb:.2f}" for peb in np.sqrt(np.linalg.trace(ue_pos_cov_post))]
+            print(f"Per UE poster PEB is: \t{' '.join(msg)}")
+            msg = [f"{rse:.2f}" for rse in np.linalg.norm(self.geo.ue_location[self.frame] - self.estimate.ue_pos_hat_post[self.frame], axis=-1)]
+            print(f"Per UE poste RMSE is: \t{' '.join(msg)}")
+
+            # Semantic errors
+            print("\nSEMA:")
+            msg = [f"{int(risk):02d}" for risk in np.nonzero(self.metrics.misclassification[self.frame])[0]]
+            print(f"UEs misclassified in this frame are: \t{' '.join(msg)}")
+            msg = [f"{float(risk):.2e}" for risk in self.metrics.risk_predicted[self.frame]]
+            print(f"UEs semantic risk predicted was: \t{' '.join(msg)}")
+            msg = [f"{float(risk):.2e}" for risk in self.metrics.risk_hat[self.frame]]
+            print(f"UEs semantic risk approxim. was: \t{' '.join(msg)}")
+            msg = [f"{float(risk):.2e}" for risk in self.metrics.risk_hat[:frame_range[-1]].mean(0)]
+            print(f"UEs avg risk appr up to frame {self.frame:03d}: \t{' '.join(msg)}")
+            msg = [f"{float(risk):.2e}" for risk in self.metrics.misclassification[:frame_range[-1]].mean(0)]
+            print(f"UEs avg misprob up to frame {self.frame:03d}: \t{' '.join(msg)}")
+
+            print("----------------------- END FRAME -------------------------\n")
+            breakpoint()
 
         if self._save_env and (self.frame == self.K - 1):    # Last frame
             p.save_params_npz(self.env_filename, sha=self.c, geo=self.geo, wir=self.wireless)
@@ -517,8 +563,12 @@ class SimulationEnvironment:
             return False
         return True
 
-    def show_environment(self, camera: rt.Camera | None = None, show_devices: bool = True,
-                         paths: rt.Paths | None = None, figsize: tuple = (14, 7)) -> plt.Figure:
+    def show_environment(self,
+                         camera: rt.Camera | None = None,
+                         show_devices: bool = True,
+                         paths: rt.Paths | None = None,
+                         figsize: tuple = (14, 7),
+                         fig: plt.Figure | None = None) -> plt.Figure:
         """Combine the top-down environment/region view and the Mitsuba ray-traced
         rendering into a single Figure with two side-by-side panels.
 
@@ -526,11 +576,16 @@ class SimulationEnvironment:
         :param show_devices: bool, whether to show UEs/APs in the render. Defaults to True.
         :param paths: rt.Paths, propagation paths to overlay on the render.
         :param figsize: size of the combined figure.
+        :param fig: plt.Figure, if None, a new Figure is created. Otherwise, the existing Figure is reused and cleared.
 
         :returns: the combined matplotlib Figure (not shown automatically -- call
             `fig.show()`, `plt.show()`, or `fig.savefig(...)` on the result).
         """
-        fig, (ax_geo, ax_render) = plt.subplots(1, 2, figsize=figsize)
+        if fig is None:
+            fig, (ax_geo, ax_render) = plt.subplots(1, 2, figsize=figsize)
+        else:
+            fig.clf()  # wipe old axes/content
+            ax_geo, ax_render = fig.subplots(1, 2)  # rebuild the two panels in the same Figure
 
         # Left panel: top-down environment/region view, drawn directly into ax_geo
         self.geo.show(frame=self.frame, ax=ax_geo)
@@ -557,7 +612,7 @@ class SimulationEnvironment:
         return fig
 
     def plot_channel(self, channel: np.ndarray,  ap_idx: int = 0, ant_idx: int = 0, ue_idx: int = 0,
-                     tol: float = 1e-2) -> plt.Figure:
+                     tol: float = 1e-2, fig: plt.Figure | None = None) -> plt.Figure:
         """Plot the channel of a single ap-ant-ue for the current frame as a sanity check."""
 
         # Print four equispaced subcarriers
@@ -587,7 +642,11 @@ class SimulationEnvironment:
         rb_boundaries = np.vstack((freqs_ghz[rb_inits], freqs_ghz[rb_ends])).T
 
         # Plot
-        fig, axs = plt.subplots(4, 4, figsize=(17, 13))
+        if fig is None:
+            fig, axs = plt.subplots(4, 4, figsize=(17, 13))
+        else:
+            fig.clf()  # wipe old axes/content
+            axs = fig.subplots(4, 4)  # rebuild the two panels in the same Figure
         fig.suptitle(f"Channel between AP {ap_idx} (antenna {ant_idx}) and UE {ue_idx} in frame {self.frame}")
 
         # Plots vs time
@@ -1058,7 +1117,8 @@ def run_episode(episode: int,
                 gpu_guard: threading.Semaphore | None = None,
                 save_metrics: bool = True,
                 metrics_dirpath: str = p.DATA_FOLDER,
-                verbose: bool = False) -> dict:
+                verbose: bool = False,
+                msg: str = "") -> dict:
     """Run one full simulation episode: build the environment, wire up the modules, step
     through every frame, then save the whole run's Shared/Geometric/Estimation/Metrics
     parameters to a single .npz.
@@ -1079,6 +1139,7 @@ def run_episode(episode: int,
     :param save_metrics: bool, if False, skip saving (useful for quick interactive runs).
     :param metrics_dirpath: str, directory the output .npz is written to.
     :param verbose: bool, print a per-frame progress bar.
+    :param msg: str, message to display before the progress bar.
 
     :returns: dict, small scalar summary (mean over frames) of a few key metrics, plus the
         saved file path under "save_path" (None if save=False). Useful for a parameter-sweep
@@ -1095,7 +1156,7 @@ def run_episode(episode: int,
     step_kwargs = step_kwargs or {}
 
     with guard:
-        # --- Build environment ---
+        # --- Build environment ---ICASSP 2029: COPENHAGEN
         env = SimulationEnvironment(episode, **env_kwargs)
         env.setup_scenario()
 
@@ -1114,7 +1175,7 @@ def run_episode(episode: int,
         env.setup_modules(ra_module, tx_module, tracker, performance)
 
         # --- Run the simulation ---
-        frame_iter = ut.std_bar(range(env.c.num_frames)) if verbose else range(env.c.num_frames)
+        frame_iter = ut.std_progressbar(range(env.c.num_frames), desc=msg) if verbose else range(env.c.num_frames)
         for _ in frame_iter:
             env.step(**step_kwargs)
 
@@ -1143,9 +1204,9 @@ results_labels = ["avg_se_achievable", "avg_se_set", "avg_queue", "avg_misclassi
 
 
 if __name__ == "__main__":
-    num_ue = 6
-    env_folder = os.path.join(p.ENV_FOLDER, f"UE{num_ue:03d}")
-    env_args = {"debugging": False, "num_frames": 30, "num_ue": num_ue, "env_dirpath": env_folder}
+    num_ue = 18
+    avg_datasize, queue_max = p.arrival_rate_init(avg_se=2, num_ue=num_ue)
+    env_args = {"debugging": True, "num_frames": 1000, "num_ue": num_ue, "avg_datasize": avg_datasize, "queue_max": queue_max, "num_regions": 8}
     step_args = {"cfo": False}
     summary = run_episode(1, ra.SemanticRiskAllocation, gpu_guard=threading.Semaphore(1), env_kwargs=env_args, step_kwargs=step_args, verbose=False,
                           metrics_dirpath=os.path.join(os.getcwd(), "data_test"))
