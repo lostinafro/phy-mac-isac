@@ -22,7 +22,7 @@ NUM_UE = 12
 NUM_EP = int(1e3)
 ROOM_SIDE = 200             # [m]
 VEL_STD = 14                 # [m/s]
-REGIONS = 16
+REGIONS = 8
 UE_HEIGHT = 1.5             # [m]
 
 # Wireless
@@ -31,7 +31,7 @@ NUMEROLOGY = 0
 NUM_SCS = 108
 NUM_SYM = 14
 NUM_SLOTS = 5 * 2 ** NUMEROLOGY
-NUM_FRAMES = 50
+NUM_FRAMES = 500
 PPM_XO = 5 / 50                # Residual PPM after initial synchronization from PRACH
 PPM_OCXO = 0.5 / 50            # Residual PPM after initial synchronization
 DATASIZE_AVG = 2048
@@ -470,7 +470,7 @@ class GeometryParams:
 
     def show(self, frame: int= 0,
              ax: plt.Axes | None = None, figsize: tuple=(6, 6), cmap_name: str = "tab20",
-             ue_radius: float = 1., arrow_scale: float = 3.0,
+             ue_radius: float = 1., arrow_scale: float = 0.1,
              ap_width: float = 1., ap_length: float = 5.0) -> plt.Axes:
         """Plot the environment boundary and semantic regions.
 
