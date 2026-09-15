@@ -16,35 +16,34 @@ from argparse import ArgumentParser
 
 ## DEFAULT PARAMETERS
 # Scenario
-NUM_AP = 4
-NUM_ANT = 4
-NUM_UE = 40
+NUM_AP = 3
+NUM_ANT = 2
+NUM_UE = 12
 NUM_EP = int(1e3)
-ROOM_SIDE = 50             # [m]
-VEL_STD = 4                 # [m/s]
-REGIONS = 8
+ROOM_SIDE = 200             # [m]
+VEL_STD = 14                 # [m/s]
+REGIONS = 16
 UE_HEIGHT = 1.5             # [m]
 
 # Wireless
 CARRIER = 3e9       # [Hz]
 NUMEROLOGY = 0
-NUM_SCS = 144
+NUM_SCS = 108
 NUM_SYM = 14
 NUM_SLOTS = 5 * 2 ** NUMEROLOGY
 NUM_FRAMES = 100
 PPM_XO = 5 / 50                # Residual PPM after initial synchronization from PRACH
 PPM_OCXO = 0.5 / 50            # Residual PPM after initial synchronization
-DATASIZE_AVG = 1024
+DATASIZE_AVG = 2048
 QUEUE_MAX = int(10 * DATASIZE_AVG)
 QUEUE_RELIABILITY = 0.95         # 1 - epsilon in the paper
-UE_POW = ut.dbm2watt(10)
+UE_POW = ut.dbm2watt(-10)
 
 # DEFAULT FOLDERS
 FIGURE_FOLDER = os.path.join(os.getcwd(), "figs")
 DATA_FOLDER = os.path.join(os.getcwd(), "data")
 SCENE_FOLDER = os.path.join(os.getcwd(), "scenes")
 MESH_FOLDER = os.path.join(SCENE_FOLDER, "meshes")
-ENV_FOLDER = os.path.join(os.getcwd(), "envs")
 
 # RayTracer and RadioMap parameters
 RT_PARAM = {
@@ -56,8 +55,8 @@ RT_PARAM = {
     "diffraction": False,
     "edge_diffraction": False,
     "synthetic_array": False,
-    "samples_per_tx": int(1e8),
-    "cell_size": (1., 1.),
+    "samples_per_tx": int(5*1e8),
+    "cell_size": (.5, .5),
 }
 
 scattering_coefficient_dict = {
@@ -85,15 +84,15 @@ def common_parser():
 
     parser.add_argument("--ra_method", type=str, default="", help="Method to use for RA simulation")
     parser.add_argument('--parallel', action='store_true', help="Enable parallel processing")
-    parser.add_argument('--savedir', type=str, default=DATA_FOLDER, help="Optional path to save results in")
+    parser.add_argument('--savesubdir', type=str, default="", help="Optional name of the subdirectory to save results in")
     parser.add_argument('--verbose', action='store_true', help="Verbose outputs")
-    parser.add_argument("--overwrite", action='store_true', help="Overwrite results eve if already present in the savedir")
+    parser.add_argument("--overwrite", action='store_true', help="Overwrite results  if already present in the savedir")
     parser.add_argument("--concurrent", type=int, default=1, help="Set the number of concurrent scripts run")
     parser.add_argument("--gpu", action='store_true', help="Set the GPU usage")
 
     args = parser.parse_args()
 
-    return args.ra_method, args.parallel, args.savedir, args.verbose, args.overwrite, args.concurrent, args.gpu
+    return args.ra_method, args.parallel, args.savesubdir, args.verbose, args.overwrite, args.concurrent, args.gpu
 
 ## CLASSES
 @dataclass
@@ -198,8 +197,9 @@ class WirelessParams:
         # Compute slot_time from numerology
         self.slot_time = 1e-3 / 2 ** self.numerology
 
-        # Compute frame_time from slot_time and S
-        self.frame_time = self.slot_time * (self.c.num_slots + 1)
+        # Compute frame_time from slot_time and S (assuming the same number of DL slots)
+        guard = 0.09
+        self.frame_time = self.slot_time * (2 * self.c.num_slots) + guard
 
         # Compute subcarrier spacing
         self.sc_spacing = 15e3 * 2 ** self.numerology
@@ -239,12 +239,14 @@ class WirelessParams:
             self.ap_power = np.ones(self.c.num_ap) * self.ap_power
 
         # Compute thermal noise
-        self.nob_ap = ut.thermal_noise(self.bw, noise_figure=3.0)
+        self.nob_ap = ut.thermal_noise(self.bw, noise_figure=9.0)
         self.nob_ue = ut.thermal_noise(self.bw, noise_figure=9.0)
 
         # Compute datasize and queue
         if self.avg_datasize is None:
             self.avg_datasize = DATASIZE_AVG * np.ones(self.c.num_ue, dtype=int)
+        elif isinstance(self.avg_datasize, float):
+            self.avg_datasize = np.ones(self.c.num_ue) * self.avg_datasize
         if self.queue_max is None:
             self.queue_max = QUEUE_MAX * np.ones(self.c.num_ue, dtype=np.int32)
         if self.queue_reliability is None:
@@ -333,6 +335,10 @@ class WirelessParams:
     def sample_new_data(self):
         """Generate new data [bits] sampling from the defined distribution."""
         return self.traffic_pdf.rvs(scale=self.avg_datasize, random_state=self.c.rng).astype(int)
+
+    def datasize_from_load(self, load_factor: float, avg_se: float) -> float:
+        """Initialize the arrival rate for a given number of UEs, slots, symbols, and average data size."""
+        return arrival_rate_init(self.c.num_ue, self.c.num_slots, avg_se, self.bw, self.slot_time, load_factor)
 
     @property
     def ap_power_dbm(self):
@@ -463,7 +469,7 @@ class GeometryParams:
 
     def show(self, frame: int= 0,
              ax: plt.Axes | None = None, figsize: tuple=(6, 6), cmap_name: str = "tab20",
-             ue_radius: float = 1., arrow_scale: float = 3.0,
+             ue_radius: float = 1., arrow_scale: float = 0.1,
              ap_width: float = 1., ap_length: float = 5.0) -> plt.Axes:
         """Plot the environment boundary and semantic regions.
 
@@ -623,6 +629,8 @@ class EstimationParams:
                     attr[frame] = value
                     if key in ("ue_pos_hat_prio", "ue_pos_hat_post"):
                         self.ue_region_hat[frame] = self.geo.in_which_region(value)
+                        out_of_regions =  self.ue_region_hat[frame] == -1
+                        self.ue_region_hat[frame, out_of_regions] = self.ue_region_hat[frame - 1, out_of_regions]
                 else:
                     # If the attribute is not an array, update it directly
                     setattr(self, key, value)
@@ -648,6 +656,7 @@ class Metrics:
     large_scale: np.ndarray = field(default=None, init=False)
     large_scale_hat: np.ndarray = field(default=None, init=False)
     # Communication parameters
+    gen_bit: np.ndarray = field(default=None, init=False)
     queue: np.ndarray = field(default=None, init=False)
     delta_queue: np.ndarray = field(default=None, init=False)
     sinr: np.ndarray = field(default=None, init=False)
@@ -676,6 +685,7 @@ class Metrics:
         self.ue_slot_map = np.zeros((self.c.num_frames + 1, self.c.num_slots, self.c.num_ue), dtype=bool)
         self.large_scale = np.zeros((self.c.num_frames + 1, self.c.num_ap, self.c.num_ue, ))
         self.large_scale_hat = np.zeros((self.c.num_frames + 1, self.c.num_ap, self.c.num_ue))
+        self.gen_bit = np.zeros((self.c.num_frames + 1, self.c.num_ue))
         self.queue = np.zeros((self.c.num_frames + 1, self.c.num_ue), dtype=np.int32)
         self.delta_queue = np.zeros((self.c.num_frames + 1, self.c.num_ue), dtype=np.int32)
         self.se_achievable = np.nan * np.zeros((self.c.num_frames + 1, self.c.num_ue))
@@ -848,4 +858,7 @@ def load_radiomap(filepath: str):
         return FakeRadioMap(**data)
 
 
-
+def arrival_rate_init(avg_se: float, num_ue: int = NUM_UE, num_slots: int = NUM_SLOTS,
+                      bw: float = NUM_SCS * 15e3 * 2 ** NUMEROLOGY, slot_time: float = 1e-3, rho: float= 0.75):
+    lambda_max = num_slots / num_ue * avg_se * bw * slot_time
+    return rho * lambda_max, 10 * lambda_max

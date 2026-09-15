@@ -51,7 +51,7 @@ if __name__ == "__main__":
 
     ### MAIN SIMULATION PARAMETERS ###
     num_ue_vec = np.array([12, 18, 27, 36, 54])
-    num_episodes = 50
+    num_episodes = 100
 
     today = datetime.now().strftime("%Y-%m-%d")
     data_folder = os.path.join(p.DATA_FOLDER, today, data_folder_suffix)
@@ -80,7 +80,6 @@ if __name__ == "__main__":
                 gpu_semaphore = threading.Semaphore(gpu_slots) if on_gpu else None
 
                 # Define save folder per episode
-                env_dirpath = os.path.join(p.ENV_FOLDER, f"UE{num_ue:03d}")
                 save_ep_dirpath = os.path.join(data_folder, prefix + f"_U{num_ue:03d}")
                 os.makedirs(save_ep_dirpath, exist_ok=True)
 
@@ -100,7 +99,6 @@ if __name__ == "__main__":
                             print(f"\tWarning: couldn't reuse cached episode {ep} ({out_path}): {e} -- re-running it.")
                     episode_kwargs.append(dict(episode=ep, ra_method=ra_method,
                                                env_kwargs={"num_ue": int(num_ue),
-                                                           "env_dirpath": env_dirpath,
                                                            "debugging": False,
                                                            "avg_datasize": avg_datasize,
                                                            "queue_max": queue_max,},

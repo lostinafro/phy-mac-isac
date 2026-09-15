@@ -51,7 +51,7 @@ if __name__ == "__main__":
 
     ### MAIN SIMULATION PARAMETERS ###
     num_regions_vec = 2 ** np.arange(1, 6)
-    num_episodes = 50
+    num_episodes = 100
 
     today = datetime.now().strftime("%Y-%m-%d")
     data_folder = os.path.join(p.DATA_FOLDER, today, data_folder_suffix)
@@ -80,7 +80,6 @@ if __name__ == "__main__":
                 gpu_semaphore = threading.Semaphore(gpu_slots) if on_gpu else None
 
                 # Define save folder per episode
-                env_dirpath = os.path.join(p.ENV_FOLDER, f"R{num_regions:03d}")
                 save_ep_dirpath = os.path.join(data_folder, prefix + f"_R{num_regions:03d}")
                 os.makedirs(save_ep_dirpath, exist_ok=True)
 
@@ -100,7 +99,6 @@ if __name__ == "__main__":
                             print(f"\tWarning: couldn't reuse cached episode {ep} ({out_path}): {e} -- re-running it.")
                     episode_kwargs.append(dict(episode=ep, ra_method=ra_method,
                                                env_kwargs={"num_regions": int(num_regions),
-                                                           "env_dirpath": env_dirpath,
                                                            "debugging": False,
                                                            "avg_datasize": avg_datasize,
                                                            "queue_max": queue_max},
@@ -121,7 +119,6 @@ if __name__ == "__main__":
                             results.extend(f.result() for f in futures)
                     else:
                         for ep_kw in episode_kwargs:
-                            print(f"\tEpisode: {ep_kw['episode']:02d}/{num_episodes - 1:02d} (R={num_regions})")
                             results.append(run_episode(**ep_kw))
 
                 # Average the scalar summaries across episodes

@@ -138,7 +138,7 @@ def filter_kwargs(obj, **kwargs) -> dict:
 
 # Random variables
 def sample_multivariate_gaussian(cov: np.ndarray, mean: np.ndarray | None = None,
-                                 rng: np.random.Generator = np.random.default_rng(42)) -> np.ndarray:
+                                 rng: np.random.Generator = np.random.default_rng()) -> np.ndarray:
     r"""Sample collection of multivariate Gaussian distribution from the covariance matrices in a vectorized version
     It uses Cholesky and explicit multiplication to avoid loops, but it needs a positive definitive covariances.
 
@@ -152,7 +152,7 @@ def sample_multivariate_gaussian(cov: np.ndarray, mean: np.ndarray | None = None
         mean = np.zeros((cov.shape[0], cov.shape[1]))
     # Precompute Cholesky decompositions: shape (A, d, d)
     trian = np.linalg.cholesky(cov)  # Upper triangular Cholesky factors
-    # Generate standard normal samples: shape (U, 1, 3)
+    # Generate standard normal samples: shape (A, 1, d)
     standard_samples = rng.standard_normal((cov.shape[0], 1, cov.shape[-1]))
     # Apply Cholesky to obtain X = μ + L @ Z, where Z ~ N(0, I)
     return mean + np.squeeze(np.einsum('nij,nmj->nmi', trian, standard_samples), axis=1)
@@ -586,7 +586,7 @@ def which_region(points: np.ndarray, multi_polygon: Polygon | MultiPolygon,
     shapely_points = [sha.Point(p) for p in points]
 
     # Initialize result: for each point, store a list of polygon indices
-    result = -1 * np.zeros(points.shape[0], dtype=np.int32)
+    result = -1 * np.ones(points.shape[0], dtype=np.int32)
 
     for i, point in enumerate(shapely_points):
         # Find candidate polygons using the spatial index
