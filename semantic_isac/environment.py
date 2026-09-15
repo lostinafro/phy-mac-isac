@@ -49,9 +49,8 @@ class SimulationEnvironment:
                  num_regions : int = p.REGIONS,
                  boundaries: np.ndarray | None = None,
                  debugging: bool = False,
-                 load_env: bool = False,
-                 save_env: bool = False,
-                 env_dirpath: str = p.ENV_FOLDER,
+                 load_env: bool = True,
+                 env_dirpath: str = p.DATA_FOLDER,
                  ):
         r"""Initializes the simulation environment for a wireless communication scenario.
 
@@ -104,7 +103,6 @@ class SimulationEnvironment:
         phy.config.seed = self.episode                  # Configuring sionna.phy to use seed equal to episode no.
         self.debug = debugging                          # Boolean declaring debug session
         if self.debug:
-            # TODO: Fix the interactive figures
             self.channel_fig = None
             self.env_fig = None
 
@@ -168,13 +166,16 @@ class SimulationEnvironment:
         # Initialize metrics parameters
         self.metrics = p.Metrics(c=self.c)      # Metrics to be saved for performance evaluation
 
-        # Save/Load environment eventually
-        self._save_env = save_env
-        if save_env:
-            os.makedirs(self.env_folder, exist_ok=True)
-
-        self.env_filename = os.path.join(self.env_folder, f"ep{self.episode:04d}.npz")
+        # Load environment eventually
         if load_env:
+            # Get all files in the current directory
+            env_files = os.listdir(self.env_folder)
+            # Filter files ending with ".txt"
+            npz_files = sorted([f for f in env_files if f.endswith(f"ep{self.episode:04d}.npz")])
+            if len(npz_files) > 0:
+                self.env_filename = os.path.join(self.env_folder, npz_files[0])
+            else:
+                self.env_filename = ""
             ## Before loading the env, check if the episode has been already generated
             data_check = (p.check_dataclass(self.env_filename, self.c, keys=list(sha_kwargs.keys())) and
                           p.check_dataclass(self.env_filename, self.wireless, keys=list(wir_kwargs.keys())) and
@@ -182,10 +183,11 @@ class SimulationEnvironment:
             if data_check:
                 self._load_env = True
             else:
-                print("Could not load environment, even if you ask. I am gonna generate a new one.")
+                # print("Could not load environment, even if you asked. I am gonna generate a new one.")
                 self._load_env = False
         else:
             self._load_env = False
+            self.env_filename = ""
 
         # RadioMap and RayTracer
         self.rm: rt.RadioMap = None             # Instance of a RadioMap. Set in _setup_scene()
@@ -339,13 +341,8 @@ class SimulationEnvironment:
             cfo_base = np.zeros_like(cfo_base)
 
         # Generate channel realization for the whole frame
-        if not self._load_env:
-            paths = self.path_solver(self.scene, seed=self.episode, **ut.filter_kwargs(self.path_solver, **self.c.rays))
-            channel = self.compute_cfr(paths, cfo_base, cto_base)   # [L, M, U, S, T, F]
-            self.wireless.update(self.frame, channel=channel)
-        else: # The environment is loaded from a file
-            paths = None
-            channel = self.wireless.channel[self.frame]
+        paths = self.path_solver(self.scene, seed=self.episode, **ut.filter_kwargs(self.path_solver, **self.c.rays))
+        channel = self.compute_cfr(paths, cfo_base, cto_base)   # [L, M, U, S, T, F]
 
         ### Prior
         # Update through Kalman equations
@@ -358,7 +355,7 @@ class SimulationEnvironment:
 
         # Generate data at the UE and check the queue
         delta_queue = self.wireless.queue_max - self.metrics.queue[self.frame - 1]
-        new_data = self.wireless.sample_new_data()
+        new_data = self.wireless.sample_new_data() if not self._load_env else self.metrics.gen_bit[self.frame]
         queue = self.metrics.queue[self.frame - 1] + new_data
 
         ### Perform allocation based on prior
@@ -440,6 +437,7 @@ class SimulationEnvironment:
 
         ### Evaluate Metrics
         self.metrics.update(self.frame, ue_idx,
+                            gen_bit=new_data,
                             queue=queue,
                             delta_queue=delta_queue,
                             large_scale=beta.mean(axis=-1),
@@ -549,10 +547,6 @@ class SimulationEnvironment:
 
             print("----------------------- END FRAME -------------------------\n")
             breakpoint()
-
-        if self._save_env and (self.frame == self.K - 1):    # Last frame
-            p.save_params_npz(self.env_filename, sha=self.c, geo=self.geo, wir=self.wireless)
-            print(f"Environment saved into file: {self.env_filename}")
 
         # Check feasibility of the current allocation
         if np.any(np.sum(ue_slot_map, axis=-1) > 1):
@@ -814,7 +808,7 @@ class SimulationEnvironment:
             new_velocity = self.geo.ue_velocity[self.frame]
         else:
             # Non-zero only on x, y (see sample_velocities)
-            new_velocity = ut.sample_multivariate_gaussian(self.geo.ue_vel_cov, rng=self.rng)    # self.sample_velocities()
+            new_velocity = ut.sample_multivariate_gaussian(self.geo.ue_vel_cov, rng=self.rng)
             new_position = old_position + new_velocity * self.wireless.frame_time
 
             # Clip new position within the environment boundaries
@@ -1157,7 +1151,7 @@ def run_episode(episode: int,
 
     with guard:
         # --- Build environment ---ICASSP 2029: COPENHAGEN
-        env = SimulationEnvironment(episode, **env_kwargs)
+        env = SimulationEnvironment(episode, **env_kwargs, env_dirpath=metrics_dirpath)
         env.setup_scenario()
 
         # --- Build and wire up modules ---
@@ -1184,7 +1178,7 @@ def run_episode(episode: int,
             ra_method_label = next(key for key, val in ra.available_methods.items() if val == ra_method)
             filename = os.path.join(metrics_dirpath, f"{ra_method_label}_ep{episode:04d}.npz")
             # remove channel from wireless
-            env.wireless.channel = None
+            # env.wireless.channel = None
             save_path = p.save_params_npz(filename, c=env.c, wireless=env.wireless, geo=env.geo,
                                           estimate=env.estimate, metrics=env.metrics)
 
@@ -1206,7 +1200,7 @@ results_labels = ["avg_se_achievable", "avg_se_set", "avg_queue", "avg_misclassi
 if __name__ == "__main__":
     num_ue = 18
     avg_datasize, queue_max = p.arrival_rate_init(avg_se=2, num_ue=num_ue)
-    env_args = {"debugging": True, "num_frames": 1000, "num_ue": num_ue, "avg_datasize": avg_datasize, "queue_max": queue_max, "num_regions": 8}
+    env_args = {"debugging": True, "num_frames": 100, "num_ue": num_ue, "avg_datasize": avg_datasize, "queue_max": queue_max, "num_regions": 16}
     step_args = {"cfo": False}
     summary = run_episode(1, ra.SemanticRiskAllocation, gpu_guard=threading.Semaphore(1), env_kwargs=env_args, step_kwargs=step_args, verbose=False,
                           metrics_dirpath=os.path.join(os.getcwd(), "data_test"))
