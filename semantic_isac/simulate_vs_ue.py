@@ -51,7 +51,7 @@ if __name__ == "__main__":
 
     ### MAIN SIMULATION PARAMETERS ###
     num_ue_vec = np.array([12, 18, 27, 36, 54])
-    num_episodes = 100
+    num_episodes = 50
 
     today = datetime.now().strftime("%Y-%m-%d")
     data_folder = os.path.join(p.DATA_FOLDER, today, data_folder_suffix)
@@ -60,7 +60,6 @@ if __name__ == "__main__":
     for ra_label in ra_methods:
         # Set RA method
         ra_method = ra.available_methods[ra_label]
-        print(f"Processing {ra_label} method")
 
         # Saving parameters
         prefix = ra_label + "_vs_ue"
@@ -71,7 +70,7 @@ if __name__ == "__main__":
         for m, num_ue in enumerate(num_ue_vec):
             if overwrite or np.any(np.isnan(avg_results[m])):
                 # Info about variable under test
-                print(f"\t{prefix} with U={num_ue}")
+                print(f"{prefix} with U={num_ue}")
 
                 ## CPU/GPU Performances
                 # Setting up maximum no. of workers and GPU semaphore to avoid oversubscription of CPU/GPU memory
@@ -104,9 +103,10 @@ if __name__ == "__main__":
                                                            "env_dirpath": env_dirpath,
                                                            "debugging": False,
                                                            "avg_datasize": avg_datasize,
-                                                           "queue_max": queue_max},
+                                                           "queue_max": queue_max,},
                                                metrics_dirpath=save_ep_dirpath,
-                                               gpu_guard=gpu_semaphore, verbose=verbose))
+                                               gpu_guard=gpu_semaphore, verbose=verbose,
+                                               msg=f"RA: {ra_label} - U={num_ue:02d} - Episode: {ep:02d}/{num_episodes - 1:02d}"))
 
                 print(f"\t{len(results)}/{num_episodes} episodes already done, running {len(episode_kwargs)} more.")
 
@@ -121,11 +121,10 @@ if __name__ == "__main__":
                             results.extend(f.result() for f in futures)
                     else:
                         for ep_kw in episode_kwargs:
-                            print(f"\tEpisode: {ep_kw['episode']:02d}/{num_episodes - 1:02d} (U={num_ue})")
                             results.append(run_episode(**ep_kw))
 
                 # Average the scalar summaries across episodes
-                avg_results[m] = np.array([[r[label] for label in results_labels] for r in results]).mean(axis=(0, -1))
+                avg_results[m] = np.nanmean(np.array([[r[label] for label in results_labels] for r in results]), axis=(0, -1))
 
                 avg_df = pd.DataFrame(avg_results, columns=results_labels)
                 avg_df.insert(0, "num_ue", num_ue_vec)
