@@ -51,7 +51,7 @@ if __name__ == "__main__":
 
     ### MAIN SIMULATION PARAMETERS ###
     num_regions_vec = 2 ** np.arange(1, 6)
-    num_episodes = 100
+    num_episodes = 50
 
     today = datetime.now().strftime("%Y-%m-%d")
     data_folder = os.path.join(p.DATA_FOLDER, today, data_folder_suffix)
