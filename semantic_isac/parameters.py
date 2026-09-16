@@ -18,8 +18,8 @@ from argparse import ArgumentParser
 # Scenario
 NUM_AP = 3
 NUM_ANT = 2
-NUM_UE = 12
-NUM_EP = int(1e3)
+NUM_UE = 18
+NUM_EP = int(1e2)
 ROOM_SIDE = 200             # [m]
 VEL_STD = 14                 # [m/s]
 REGIONS = 16
@@ -80,19 +80,20 @@ scattering_pattern_dict = {
 }
 
 def common_parser():
+    # TODO: to be moved on the run_episode script
     parser = ArgumentParser(description="Common parser to run simulations.")
 
     parser.add_argument("--ra_method", type=str, default="", help="Method to use for RA simulation")
     parser.add_argument('--parallel', action='store_true', help="Enable parallel processing")
     parser.add_argument('--savesubdir', type=str, default="", help="Optional name of the subdirectory to save results in")
-    parser.add_argument('--verbose', action='store_true', help="Verbose outputs")
+    parser.add_argument('--quiet', action='store_true', help="Quiet outputs")
     parser.add_argument("--overwrite", action='store_true', help="Overwrite results  if already present in the savedir")
     parser.add_argument("--concurrent", type=int, default=1, help="Set the number of concurrent scripts run")
     parser.add_argument("--gpu", action='store_true', help="Set the GPU usage")
 
     args = parser.parse_args()
 
-    return args.ra_method, args.parallel, args.savesubdir, args.verbose, args.overwrite, args.concurrent, args.gpu
+    return args.ra_method, args.parallel, args.savesubdir, args.quiet, args.overwrite, args.concurrent, args.gpu
 
 ## CLASSES
 @dataclass
