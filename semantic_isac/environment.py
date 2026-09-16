@@ -1111,7 +1111,7 @@ def run_episode(episode: int,
                 gpu_guard: threading.Semaphore | None = None,
                 save_metrics: bool = True,
                 metrics_dirpath: str = p.DATA_FOLDER,
-                verbose: bool = False,
+                quiet: bool = False,
                 msg: str = "") -> dict:
     """Run one full simulation episode: build the environment, wire up the modules, step
     through every frame, then save the whole run's Shared/Geometric/Estimation/Metrics
@@ -1132,7 +1132,7 @@ def run_episode(episode: int,
     :param gpu_guard: threading.Semaphore, set to the GPU access to grant.
     :param save_metrics: bool, if False, skip saving (useful for quick interactive runs).
     :param metrics_dirpath: str, directory the output .npz is written to.
-    :param verbose: bool, print a per-frame progress bar.
+    :param quiet: bool, print a per-frame progress bar.
     :param msg: str, message to display before the progress bar.
 
     :returns: dict, small scalar summary (mean over frames) of a few key metrics, plus the
@@ -1169,7 +1169,7 @@ def run_episode(episode: int,
         env.setup_modules(ra_module, tx_module, tracker, performance)
 
         # --- Run the simulation ---
-        frame_iter = ut.std_progressbar(range(env.c.num_frames), desc=msg) if verbose else range(env.c.num_frames)
+        frame_iter = ut.std_progressbar(range(env.c.num_frames), desc=msg) if not quiet else range(env.c.num_frames)
         for _ in frame_iter:
             env.step(**step_kwargs)
 
@@ -1202,6 +1202,6 @@ if __name__ == "__main__":
     avg_datasize, queue_max = p.arrival_rate_init(avg_se=2, num_ue=num_ue)
     env_args = {"debugging": True, "num_frames": 100, "num_ue": num_ue, "avg_datasize": avg_datasize, "queue_max": queue_max, "num_regions": 16}
     step_args = {"cfo": False}
-    summary = run_episode(1, ra.SemanticRiskAllocation, gpu_guard=threading.Semaphore(1), env_kwargs=env_args, step_kwargs=step_args, verbose=False,
+    summary = run_episode(1, ra.SemanticRiskAllocation, gpu_guard=threading.Semaphore(1), env_kwargs=env_args, step_kwargs=step_args,
                           metrics_dirpath=os.path.join(os.getcwd(), "data_test"))
     print(summary)
