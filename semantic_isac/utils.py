@@ -843,6 +843,7 @@ def get_processing_resources(num_scripts: int,
                              on_gpu: bool, num_ue: int = 1, mib_vram_per_ue: int | float = 200,
                              mib_vram_baseline: int = 210,
                              usable_gpu_ids: list[int] | None = None):
+    # TODO: the amount of GPU VRAM (in MiB) required per episode instead of per UE
     """Estimate the number of CPU workers, threads per worker, and GPU semaphore value based on the number of scripts,
     episodes, and GPU availability.
     It considers a mib_vram_per_ue = 200 if not specified otherwise.

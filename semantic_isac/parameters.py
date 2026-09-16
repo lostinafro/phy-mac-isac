@@ -4,7 +4,6 @@ import rtree
 from scipy.spatial.transform import Rotation
 from scipy.constants import speed_of_light
 import scipy.stats as stats
-from shapely import Polygon
 
 import utils as ut
 import shapely as sha
@@ -763,9 +762,7 @@ def save_params_npz(filepath: str, **dataclass_instances) -> str:
       - scipy Rotation -> quaternion array (`.as_quat()`)
       - shapely Polygon/MultiPolygon -> WKT string
       - dict -> stored as a 0-d object array (allow_pickle)
-      - a field that's a *reference to another one of the passed dataclass instances*
-        (e.g. GeometryParams.c, EstimationParams.geo) is skipped -- avoids saving the
-        same data twice; pass every dataclass you want saved explicitly.
+      - fields referencing another one of the passed dataclass instances, e.g. GeometryParams.c, are skipped.
       - genuinely unserializable live objects (rtree.index.Index, np.random.Generator) are skipped.
 
     :param filepath: str, output path (".npz" appended automatically if missing).
