@@ -1,13 +1,11 @@
-from logging import exception
-from itertools import product
 import numpy as np
 import matplotlib.pyplot as plt
 import os
 from resource_allocation import available_methods
 import scipy.stats as stats
-import pandas as pd
-import utils as ut
 import parameters as p
+from simulate_vs_ue import num_ue_vec
+from simulate_vs_regions import num_regions_vec
 
 def latex_look(pl):
     # Set LaTeX as the default text interpreter
@@ -47,14 +45,18 @@ def output_results(num_vec: list | np.ndarray, datapath: str,
         n_method_cdfs = {}
         for method in method_labels:
             # Data folder to read the data from
-            data_folder = os.path.join(datapath, method + suffix + f"_U{n:03d}")
+            data_folder = os.path.join(datapath, method + suffix + f"{n:03d}")
             # Check for algorithm
             try:
-                n_dict[method] = load_episodes(data_folder, method, range(100), results_labels)
+                n_dict[method] = load_episodes(data_folder, method, range(p.NUM_EP), results_labels)
                 field_cdfs = {}
                 for field_label in cdf_labels:
                     if field_label in ["risk_predicted"]:
                         sample = n_dict[method][field_label][:, :-1].sum(axis=-1).flatten()
+                        sample = sample[~np.isnan(sample)]
+                        field_cdfs[field_label] = stats.ecdf(sample)
+                    elif field_label in ["misclassification"]:
+                        sample = n_dict[method][field_label][:, :-1].mean(axis=1).flatten()
                         sample = sample[~np.isnan(sample)]
                         field_cdfs[field_label] = stats.ecdf(sample)
                     else:
@@ -69,57 +71,112 @@ def output_results(num_vec: list | np.ndarray, datapath: str,
     return overall_dict, method_cdfs
 
 
+def plot_cdfs(num_tests: list | np.ndarray,
+              cdfs: type[stats.ecdf],
+              metrics: list[str],
+              methods: list[str],
+              method_colors: dict[str, str],
+              test_label: str,
+              method_markers: dict[str, str] | None = None,
+              **plot_shared_kwargs):
+    """Plot eCDFs in a A3 size multifigures."""
+
+    if method_markers is None:
+        method_markers = dict(zip(methods, [''] * len(methods)))
+
+    # Generate figure
+    fig, ax = plt.subplots(nrows=len(metrics), ncols=len(num_tests), figsize=(42 * cm, 29.7 * cm))
+
+    # Cycle through axes
+    for n, value in enumerate(num_tests):
+        # Each column uses the same parameter
+        ax[0, n].set_title(test_label + f": {value}" )
+        # Cycle through different variables
+        for i, var_label in enumerate(metrics):
+            # Cycle through different methods
+            for phase, method in enumerate(methods):
+                try:
+                    cdf = cdfs[n][method][var_label].cdf
+                    # Always having max 10 markers
+                    step = max(1, len(cdf.quantiles) // 10)
+                    mark_every = (phase * step // len(methods), step)
+                    cdf.plot(ax=ax[i, n], label=f"{method}",
+                             color=method_colors[method],
+                             marker=method_markers[method],
+                             markevery=mark_every,
+                             **plot_shared_kwargs)
+                except Exception as e:
+                    print(f"Error plotting CDF for {method} and {var_label}: {e}")
+            # If there is at least a label, print the legend
+            if ax[i, n].get_legend_handles_labels()[1]:
+               ax[i, n].legend()
+            ax[i, n].grid(True)
+            ax[i, n].set_xlabel(var_label)
+            ax[i, n].set_ylabel("CDF")
+    fig.tight_layout()
+    return fig, ax
+
+
+def print_avg_perc(tests_values: list | np.ndarray,
+                   res_dict: dict,
+                   res_cdfs: dict,
+                   perc: float | list | np.ndarray):
+
+    if isinstance(perc, float):
+        perc = [perc]
+
+    for metric in metrics:
+        print(f"{metric}".upper())
+        for method in ra_labels:
+            try:
+                # Take average
+                avg = [f"{np.nanmean(res_dict[u][method][metric][:, :-1]):.3f}" for u, _ in enumerate(tests_values)]
+                print(f"\tAvg. for {method}: {' '.join(avg)}")
+
+                # Test perc
+                for p in perc:
+                    idx = [np.where(res_cdfs[u][method][metric].cdf.probabilities > p)[0][0] for u, _ in enumerate(tests_values)]
+                    prob = [f"{res_cdfs[u][method][metric].cdf.quantiles[idx[u]]:.3f}" for u, _ in enumerate(tests_values)]
+                    print(f"\t{p * 100:.1f}% for {method}: {' '.join(prob)}")
+            except Exception as e:
+                print(f"Error computing statistics for {method} and {metric}: {e}")
+
+## GENERAL PARAMETERS
+latex_look(plt)
+cm = 1 / 2.54
+
+
 if __name__ == "__main__":
+    # Define colors and markers for each RA method
+    ra_labels = list(available_methods.keys())
+    colors = dict(zip(available_methods.keys(), ["#ff0000", "#ffd700", "#ffb14e", "#fa8775", "#cd34b5", "#0000ff"]))
+    markers = dict(zip(available_methods.keys(), ["o", "s", "D", "p", "X", "v"]))
+
     # Setting the results to read
-    results_labels = ["avg_datasize", "area_coordinates", "ue_slot_map", "large_scale", "large_scale_hat", "queue", "delta_queue",
-                      "se_achievable", "se_set", "sinr", "efim_oracle", "efim_predicted",
+    results_metrics = ["queue_max", "queue",
+                      "se_achievable", "se_set", "sinr",
+                      "efim_oracle", "efim_predicted",
                       "misclassification", "risk_hat"]
     # Setting the results for cdf computation
-    cdf_labels = ["queue", "se_achievable", "se_set", "misclassification", "risk_hat"]
-    colors =  dict(zip(available_methods.keys(), [ "#ff0000", "#ffd700", "#ffb14e", "#fa8775", "#cd34b5", "#0000ff" ]))
-
+    metrics = ["queue", "se_achievable", "se_set", "misclassification", "risk_hat"]
 
     # Other parameters
-    num_ue_vec = np.array([12, 18, 27, 36, 54])
-    ra_labels = list(available_methods.keys())
-    data_path = os.path.join(p.DATA_FOLDER, "2026-09-14", "se_test")
+    data_path = os.path.join(p.DATA_FOLDER, "2026-09-16", "frame100_room200_speed14_U16")
 
-    big_dict, ra_cdfs = output_results(num_ue_vec, data_path, ra_labels, results_labels, cdf_labels, suffix="_vs_ue")
+    ## TEST VS_UE
+    # Generate dictionaries
+    ue_dict, ue_cdfs = output_results(num_ue_vec, data_path, ra_labels, results_metrics, metrics, suffix="_vs_ue_U")
+    reg_dict, reg_cdfs = output_results(num_regions_vec, data_path, ra_labels, results_metrics, metrics, suffix="_vs_regions_R")
+
 
     # Plot CDFs
-    latex_look(plt)
-    cm = 1 / 2.54
-    fig, ax = plt.subplots(nrows=len(cdf_labels), ncols=len(num_ue_vec), figsize=(42*cm, 29.7*cm))
-    for u, ue in enumerate(num_ue_vec):
-        ax[0, u].set_title(f"{ue} UEs")
-        for i, field_label in enumerate(cdf_labels):
-            for method in ra_labels:
-                try:
-                    curve = ra_cdfs[u][method][field_label].cdf.plot(ax=ax[i, u])[0]
-                    curve.set_label(f"{method}")
-                    curve.set_color(colors[method])
-                    curve.set_linestyle("dashed")
-                except Exception as e:
-                    print(f"Error computing CDF for {method} and {field_label}: {e}")
-            if ax[i, u].get_legend_handles_labels()[1]:  # If there is at least a label, print the legend
-               ax[i, u].legend()
-            ax[i, u].grid(True)
-            ax[i, u].set_xlabel(field_label)
-            ax[i, u].set_ylabel("CDF")
-    fig.tight_layout()
-    # fig.show()
-    # Save figure
+    shared_args =dict(linestyle="dashed", linewidth=1, markersize=3)
+    fig_ue, ax_ue = plot_cdfs(num_ue_vec, ue_cdfs, metrics, ra_labels, colors, "UEs", method_markers=markers, **shared_args)
     filename = os.path.join(data_path, "cdf_vs_ue")
-    fig.savefig(filename + '.jpg', dpi=300, bbox_inches='tight')
+    fig_ue.savefig(filename + '.jpg', dpi=300, bbox_inches='tight')
 
-    for field_label in cdf_labels:
-        print(f"{field_label}".upper())
-        for method in ra_labels:
-            avg = [float(np.nanmean(big_dict[u][method][field_label][:, :-1])) for u, _ in enumerate(num_ue_vec)]
-            prob_95 = [float(ra_cdfs[u][method][field_label].cdf.quantiles[np.where(ra_cdfs[u][method][field_label].cdf.probabilities > 0.95)[0][0]]) for u, _ in enumerate(num_ue_vec)]
-            print(f"\tAvg. for {method}: {avg}")
-            print(f"\t95% for {method}: {prob_95}")
+    fig_reg, ax_reg = plot_cdfs(num_regions_vec, reg_cdfs, metrics, ra_labels, colors, "R", method_markers=markers, **shared_args)
+    filename = os.path.join(data_path, "cdf_vs_reg")
+    fig_reg.savefig(filename + '.jpg', dpi=300, bbox_inches='tight')
 
-
-    a = 42
-
+    print_avg_perc(num_regions_vec, reg_dict, reg_cdfs, perc=[0.95])
