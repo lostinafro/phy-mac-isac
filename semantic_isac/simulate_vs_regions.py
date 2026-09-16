@@ -29,9 +29,12 @@ def load_summary_from_npz(filepath: str, results_label: list[str]) -> dict:
             summary[label] = np.nanmean(data[field][:-1], axis=0)
     return summary
 
+### MAIN SIMULATION PARAMETERS ###
+num_regions_vec = 2 ** np.arange(1, 6)
+num_episodes = 100
 
 if __name__ == "__main__":
-    ra_methods, parallel, data_folder_suffix, verbose, overwrite, concurrent, on_gpu = p.common_parser()
+    ra_methods, parallel, data_folder_suffix, quiet, overwrite, concurrent, on_gpu = p.common_parser()
     # if on_gpu:
     #     free_gpus = ut.select_available_gpus()
     #     if not free_gpus:
@@ -44,17 +47,18 @@ if __name__ == "__main__":
     # else:
     #     free_gpus = None
 
+    # Test all methods if unspecified
     if ra_methods == "":
         ra_methods = ra.available_methods
     else:
         ra_methods = [ra_methods]
 
-    ### MAIN SIMULATION PARAMETERS ###
-    num_regions_vec = 2 ** np.arange(1, 6)
-    num_episodes = 100
-
+    # Data folder for today
     today = datetime.now().strftime("%Y-%m-%d")
     data_folder = os.path.join(p.DATA_FOLDER, today, data_folder_suffix)
+
+    # Check maximum load for non-trivial/non_explosive queues
+    avg_datasize, queue_max = p.arrival_rate_init(avg_se=2)
 
     # Cycling through methods
     for ra_label in ra_methods:
@@ -70,11 +74,12 @@ if __name__ == "__main__":
         for m, num_regions in enumerate(num_regions_vec):
             if overwrite or np.any(np.isnan(avg_results[m])):
                 # Info about variable under test
-                print(f"{prefix} with R={num_regions}")
+                print(f"Running {prefix} with R={num_regions}:", end=" ")
 
-                ## CPU/GPU Performances
+                # TODO: from here to the simulation start should be a function in utils.run
+                # CPU/GPU Performances
                 # Setting up maximum no. of workers and GPU semaphore to avoid oversubscription of CPU/GPU memory
-                cpu_slots, gpu_slots = ut.get_processing_resources(concurrent, on_gpu, num_regions)
+                cpu_slots, gpu_slots = ut.get_processing_resources(concurrent, on_gpu, p.NUM_UE)
                 cpu_workers = min(cpu_slots, num_episodes)
                 # Generate GPU semaphore
                 gpu_semaphore = threading.Semaphore(gpu_slots) if on_gpu else None
@@ -82,9 +87,6 @@ if __name__ == "__main__":
                 # Define save folder per episode
                 save_ep_dirpath = os.path.join(data_folder, prefix + f"_R{num_regions:03d}")
                 os.makedirs(save_ep_dirpath, exist_ok=True)
-
-                # Check maximum load for non-trivial/non_explosive queues
-                avg_datasize, queue_max = p.arrival_rate_init(avg_se=2)
 
                 ## Check which episodes have already been run
                 results = []
@@ -103,10 +105,13 @@ if __name__ == "__main__":
                                                            "avg_datasize": avg_datasize,
                                                            "queue_max": queue_max},
                                                metrics_dirpath=save_ep_dirpath,
-                                               gpu_guard=gpu_semaphore, verbose=verbose,
+                                               gpu_guard=gpu_semaphore, quiet=quiet,
                                                msg=f"RA: {ra_label} - R={num_regions:02d} - Episode: {ep:02d}/{num_episodes - 1:02d}"))
+                # Show the number of episodes remaining
+                print(f"{len(results)} episodes already done, {len(episode_kwargs)} remaining.")
 
-                print(f"\t{len(results)}/{num_episodes} episodes already done, running {len(episode_kwargs)} more.")
+                if len(episode_kwargs) == 0:
+                    continue
 
                 # Start simulation on the missing episodes
                 start_time = time.time()
