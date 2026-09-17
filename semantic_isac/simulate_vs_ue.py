@@ -30,7 +30,7 @@ def load_summary_from_npz(filepath: str, results_label: list[str]) -> dict:
     return summary
 
  ### MAIN SIMULATION PARAMETERS ###
-num_ue_vec = np.array([12, 18, 27, 36, 54])
+num_ue_vec = np.array([6, 12, 18, 27, 36])
 num_episodes = p.NUM_EP
 
 
@@ -58,6 +58,10 @@ if __name__ == "__main__":
     today = datetime.now().strftime("%Y-%m-%d")
     data_folder = os.path.join(p.DATA_FOLDER, today, data_folder_suffix)
 
+    # Compute datasize and queue_max
+    # Check maximum load for non-trivial/non_explosive queues
+    avg_datasize, queue_max = p.arrival_rate_init(avg_se=2, num_ue=num_ue_vec)
+
     # Cycling through methods
     for ra_label in ra_methods:
         # Set RA method
@@ -70,71 +74,66 @@ if __name__ == "__main__":
 
         # Start processing
         for m, num_ue in enumerate(num_ue_vec):
-            if overwrite or np.any(np.isnan(avg_results[m])):
-                # Info about variable under test
-                print(f"Running {prefix} with U={num_ue}:", end=" ")
+            # Printing info about variable under test
+            print(f"Running {prefix} with U={num_ue}:", end=" ")
 
-                ## CPU/GPU Performances
-                # Setting up maximum no. of workers and GPU semaphore to avoid oversubscription of CPU/GPU memory
-                cpu_slots, gpu_slots = ut.get_processing_resources(concurrent, on_gpu, num_ue)
-                cpu_workers = min(cpu_slots, num_episodes)
-                # Generate GPU semaphore
-                gpu_semaphore = threading.Semaphore(gpu_slots) if on_gpu else None
+            ## CPU/GPU Performances
+            # Setting up maximum no. of workers and GPU semaphore to avoid oversubscription of CPU/GPU memory
+            cpu_slots, gpu_slots = ut.get_processing_resources(concurrent, on_gpu, num_ue)
+            cpu_workers = min(cpu_slots, num_episodes)
+            # Generate GPU semaphore
+            gpu_semaphore = threading.Semaphore(gpu_slots) if on_gpu else None
 
-                # Define save folder per episode
-                save_ep_dirpath = os.path.join(data_folder, prefix + f"_U{num_ue:03d}")
-                os.makedirs(save_ep_dirpath, exist_ok=True)
+            # Define save folder per episode
+            save_ep_dirpath = os.path.join(data_folder, prefix + f"_U{num_ue:03d}")
+            os.makedirs(save_ep_dirpath, exist_ok=True)
 
-                # Check maximum load for non-trivial/non_explosive queues
-                avg_datasize, queue_max = p.arrival_rate_init(avg_se=2, num_ue=num_ue)
 
-                ## Check which episodes have already been run
-                results = []
-                episode_kwargs = []
-                for ep in range(num_episodes):
-                    out_path = os.path.join(save_ep_dirpath, f"{ra_label}_ep{ep:04d}.npz")
-                    if not overwrite and os.path.exists(out_path):
-                        try:
-                            results.append(load_summary_from_npz(out_path, results_labels))
-                            continue
-                        except Exception as e:
-                            print(f"\tWarning: couldn't reuse cached episode {ep} ({out_path}): {e} -- re-running it.")
-                    episode_kwargs.append(dict(episode=ep, ra_method=ra_method,
-                                               env_kwargs={"num_ue": int(num_ue),
-                                                           "debugging": False,
-                                                           "avg_datasize": avg_datasize,
-                                                           "queue_max": queue_max,},
-                                               metrics_dirpath=save_ep_dirpath,
-                                               gpu_guard=gpu_semaphore, quiet=quiet,
-                                               msg=f"RA: {ra_label} - U={num_ue:02d} - Episode: {ep:02d}/{num_episodes - 1:02d}"))
 
-                print(f"{len(results)} episodes already done, {len(episode_kwargs)} remaining.")
+            ## Check which episodes have already been run
+            results = []
+            episode_kwargs = []
+            for ep in range(num_episodes):
+                out_path = os.path.join(save_ep_dirpath, f"{ra_label}_ep{ep:04d}.npz")
+                if not overwrite and os.path.exists(out_path):
+                    try:
+                        results.append(load_summary_from_npz(out_path, results_labels))
+                        continue
+                    except Exception as e:
+                        print(f"\tWarning: couldn't reuse cached episode {ep} ({out_path}): {e} -- re-running it.")
+                episode_kwargs.append(dict(episode=ep, ra_method=ra_method,
+                                           env_kwargs={"num_ue": int(num_ue),
+                                                       "debugging": False,
+                                                       "avg_datasize": avg_datasize[m],
+                                                       "queue_max": queue_max[m],},
+                                           metrics_dirpath=save_ep_dirpath,
+                                           gpu_guard=gpu_semaphore, quiet=quiet,
+                                           msg=f"RA: {ra_label} - U={num_ue:02d} - Episode: {ep:02d}/{num_episodes - 1:02d}"))
 
-                if len(episode_kwargs) == 0:
-                    continue
+            print(f"{len(results)} episodes already done, {len(episode_kwargs)} remaining.")
 
-                # Start simulation on the missing episodes
-                start_time = time.time()
-                if episode_kwargs:
-                    if parallel:
-                        import torch
-                        torch.set_num_threads(cpu_slots)
-                        with ThreadPoolExecutor(max_workers=cpu_workers) as executor:
-                            futures = [executor.submit(run_episode, **kw) for kw in episode_kwargs]
-                            results.extend(f.result() for f in futures)
-                    else:
-                        for ep_kw in episode_kwargs:
-                            results.append(run_episode(**ep_kw))
-
-                # Average the scalar summaries across episodes
-                avg_results[m] = np.nanmean(np.array([[r[label] for label in results_labels] for r in results]), axis=(0, -1))
-
-                avg_df = pd.DataFrame(avg_results, columns=results_labels)
-                avg_df.insert(0, "num_ue", num_ue_vec)
-                avg_df.to_csv(filename, index=False)
-
-                elapsed = time.time() - start_time
-                print(f"\t...done in {elapsed:.3f} seconds")
-            else:
-                print(f"\tnum_ue={num_ue} ...already done!")
+            if len(episode_kwargs) == 0:
                 continue
+
+            # Start simulation on the missing episodes
+            start_time = time.time()
+            if episode_kwargs:
+                if parallel:
+                    import torch
+                    torch.set_num_threads(cpu_slots)
+                    with ThreadPoolExecutor(max_workers=cpu_workers) as executor:
+                        futures = [executor.submit(run_episode, **kw) for kw in episode_kwargs]
+                        results.extend(f.result() for f in futures)
+                else:
+                    for ep_kw in episode_kwargs:
+                        results.append(run_episode(**ep_kw))
+
+            # Average the scalar summaries across episodes
+            avg_results[m] = np.nanmean(np.array([[r[label] for label in results_labels] for r in results]), axis=(0, -1))
+
+            avg_df = pd.DataFrame(avg_results, columns=results_labels)
+            avg_df.insert(0, "num_ue", num_ue_vec)
+            avg_df.to_csv(filename, index=False)
+
+            elapsed = time.time() - start_time
+            print(f"\t...done in {elapsed:.3f} seconds")
