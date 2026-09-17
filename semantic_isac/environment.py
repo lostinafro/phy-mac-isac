@@ -104,6 +104,7 @@ class SimulationEnvironment:
         self.debug = debugging                          # Boolean declaring debug session
         if self.debug:
             self.channel_fig = None
+            self.scene_fig = None
             self.env_fig = None
 
         # Folders
@@ -167,27 +168,26 @@ class SimulationEnvironment:
         self.metrics = p.Metrics(c=self.c)      # Metrics to be saved for performance evaluation
 
         # Load environment eventually
+        self.env_filename = ""
+        self._load_env = load_env
         if load_env:
             # Get all files in the current directory
-            env_files = os.listdir(self.env_folder)
-            # Filter files ending with ".txt"
-            npz_files = sorted([f for f in env_files if f.endswith(f"ep{self.episode:04d}.npz")])
-            if len(npz_files) > 0:
+            try:
+                # If env_folder does not exist, the try-except will catch the FileNotFoundError
+                env_files = os.listdir(self.env_folder)
+                # Filter files ending with ".txt"
+                npz_files = sorted([f for f in env_files if f.endswith(f"ep{self.episode:04d}.npz")])
+                # If npz_files is empty, the try-except will catch the IndexError
                 self.env_filename = os.path.join(self.env_folder, npz_files[0])
-            else:
-                self.env_filename = ""
-            ## Before loading the env, check if the episode has been already generated
-            data_check = (p.check_dataclass(self.env_filename, self.c, keys=list(sha_kwargs.keys())) and
-                          p.check_dataclass(self.env_filename, self.wireless, keys=list(wir_kwargs.keys())) and
-                          p.check_dataclass(self.env_filename, self.geo, keys=["area_coordinates"]))
-            if data_check:
-                self._load_env = True
-            else:
-                # print("Could not load environment, even if you asked. I am gonna generate a new one.")
+                # Before loading the env, check if the episode has been already generated with the same parameters
+                data_check = (p.check_dataclass(self.env_filename, self.c, keys=list(sha_kwargs.keys())) and
+                              p.check_dataclass(self.env_filename, self.wireless, keys=list(wir_kwargs.keys())) and
+                              p.check_dataclass(self.env_filename, self.geo, keys=["area_coordinates"]))
+                # Reset load_env value
+                self._load_env = True if data_check else False
+            # Catch missing env_folder or missing npz_files
+            except (FileNotFoundError, IndexError):
                 self._load_env = False
-        else:
-            self._load_env = False
-            self.env_filename = ""
 
         # RadioMap and RayTracer
         self.rm: rt.RadioMap = None             # Instance of a RadioMap. Set in _setup_scene()
@@ -313,8 +313,8 @@ class SimulationEnvironment:
         self._setup_scene()  # Instance of sionna.rt Scene class
 
         if self.debug:
-            self.env_fig = self.show_environment()
-            self.env_fig.show()
+            self.scene_fig = self.show_environment()
+            self.scene_fig.show()
 
     def step(self, cto: bool = True, cfo: bool = True, sync: bool = False):
         """Evaluates operations in a frame"""
@@ -417,7 +417,7 @@ class SimulationEnvironment:
 
         # Taking the amount of bits transmitted and update the queue
         bits_tx = np.asarray(np.floor(se_per_scheduled_ue * self.wireless.bw * self.wireless.slot_time), dtype=np.int32)
-        queue[ue_idx] = np.maximum(queue[ue_idx] - bits_tx, np.zeros_like(queue[ue_idx]))
+        queue[ue_idx] = np.clip(queue[ue_idx] - bits_tx, 0, None)
 
         # Create the observation for the scheduled UEs (assuming asymptotic performance are achievable)
         asymptotic_cov = np.linalg.inv(oracle_efim[ue_slot_map])
@@ -429,10 +429,14 @@ class SimulationEnvironment:
         ue_pos_hat_post, ue_pos_cov_post = self.tracker_module.posterior(obs_vec, ue_pos_hat_pri,
                                                                          ue_pos_cov_pri, ue_idx,
                                                                          obs_cov=asymptotic_cov)
-        self.estimate.update(self.frame,
+        self.estimate.update(self.frame, ue_idx,
                              ue_pos_hat_post=ue_pos_hat_post,
-                             ue_pos_cov_post=ue_pos_cov_post)
+                             ue_pos_cov_post=ue_pos_cov_post,
+                             ue_pos_hat_meas=obs_vec,
+                             ue_pos_cov_meas=asymptotic_cov,
+                             )
 
+        # Compute which UEs are misclassified
         misclassified = self.geo.ue_region[self.frame] != self.estimate.ue_region_hat[self.frame]
 
         ### Evaluate Metrics
@@ -462,7 +466,11 @@ class SimulationEnvironment:
             else:
                 frame_range = np.arange(self.frame - every, self.frame) + 1
             # Visualize
-            self.env_fig = self.show_environment(paths=paths, fig=getattr(self, "env_fig", None))
+            # self.scene_fig = self.show_environment(paths=paths, fig=getattr(self, "scene_fig", None))
+            # self.scene_fig.canvas.draw_idle()
+            # plt.pause(0.001)
+
+            self.env_fig = self.show_estimation(frame=self.frame, fig=getattr(self, "scene_fig", None))
             self.env_fig.canvas.draw_idle()
             plt.pause(0.001)
 
@@ -603,6 +611,38 @@ class SimulationEnvironment:
             ax_render.text(0.5, 0.5, "No scene available for rendering.\nCall _setup_scene() first.",
                            ha="center", va="center", transform=ax_render.transAxes)
             ax_render.axis("off")
+        return fig
+
+    def show_estimation(self,
+                        frame: int = -1, confidence: float = 0.99,
+                        ue_idx: np.ndarray | None = None,
+                        figsize: tuple = (18, 6),
+                        fig: plt.Figure | None = None) -> plt.Figure:
+        """Plot the environment three times side by side, overlaying the prior, measured, and
+        posterior UE position estimates (with confidence ellipses) respectively.
+
+        :param frame: int, which stored frame to plot (default: -1, the initialization frame).
+        :param confidence: float, confidence level in (0, 1) for the covariance ellipses. Default 0.99.
+        :param ue_idx: np.ndarray | None, which UEs to plot. Default: all.
+        :param figsize: size of the combined figure.
+        :param fig: plt.Figure, if None, a new Figure is created. Otherwise, the existing Figure is
+            reused and cleared.
+
+        :returns: the combined matplotlib Figure (not shown automatically -- call
+            `fig.show()`, `plt.show()`, or `fig.savefig(...)` on the result).
+        """
+        if fig is None:
+            fig, (ax_prio, ax_meas, ax_post) = plt.subplots(1, 3, figsize=figsize)
+        else:
+            fig.clf()
+            ax_prio, ax_meas, ax_post = fig.subplots(1, 3)
+
+        titles = {"prio": "Prior", "meas": "Measured", "post": "Posterior"}
+        for ax, kind in zip((ax_prio, ax_meas, ax_post), titles):
+            self.geo.show(frame=frame, ax=ax)
+            self.estimate.show(ax=ax, frame=frame, kind=kind, confidence=confidence, ue_idx=ue_idx)
+            ax.set_title(titles[kind])
+
         return fig
 
     def plot_channel(self, channel: np.ndarray,  ap_idx: int = 0, ant_idx: int = 0, ue_idx: int = 0,
@@ -1150,7 +1190,7 @@ def run_episode(episode: int,
     step_kwargs = step_kwargs or {}
 
     with guard:
-        # --- Build environment ---ICASSP 2029: COPENHAGEN
+        # --- Build environment ---
         env = SimulationEnvironment(episode, **env_kwargs, env_dirpath=metrics_dirpath)
         env.setup_scenario()
 
@@ -1194,14 +1234,113 @@ def run_episode(episode: int,
         }
         return summary
 
+def run_skewed(episode: int,
+                ra_method: type[ra.ResourceAllocationBase],
+                ra_kwargs: dict | None = None,
+                env_kwargs: dict | None = None,
+                step_kwargs: dict | None = None,
+                gpu_guard: threading.Semaphore | None = None,
+                save_metrics: bool = True,
+                metrics_dirpath: str = p.DATA_FOLDER,
+                quiet: bool = False,
+                msg: str = "") -> dict:
+    """Run one full simulation episode: build the environment, wire up the modules, step
+    through every frame, then save the whole run's Shared/Geometric/Estimation/Metrics
+    parameters to a single .npz.
+
+    :param episode: int, episode index -- seeds the environment's RNG, and disambiguates
+        this run's output filename (must be the first positional argument).
+    :param ra_method: type[ResourceAllocationBase], a class from resource_allocation.py
+        (not an instance -- it's constructed here once env.c/wireless/geo/estimate exist),
+        e.g. `ra.RoundRobinAllocation` (must be the second positional argument).
+    :param ra_kwargs: dict | None, extra kwargs forwarded to `ra_method`'s constructor.
+    :param env_kwargs: dict | None, kwargs forwarded to `SimulationEnvironment.__init__`
+        (num_ue, num_ap, area_coordinates, lo_ppm, ue_power, ...). `episode` is filled in
+        automatically -- don't include it here.
+    :param step_kwargs: dict | None, kwargs forwarded to every `env.step(...)` call
+        (cto, cfo, sync).
+
+    :param gpu_guard: threading.Semaphore, set to the GPU access to grant.
+    :param save_metrics: bool, if False, skip saving (useful for quick interactive runs).
+    :param metrics_dirpath: str, directory the output .npz is written to.
+    :param quiet: bool, print a per-frame progress bar.
+    :param msg: str, message to display before the progress bar.
+
+    :returns: dict, small scalar summary (mean over frames) of a few key metrics, plus the
+        saved file path under "save_path" (None if save=False). Useful for a parameter-sweep
+        script to aggregate across episodes without re-reading every .npz.
+    """
+    ### Set up machine variables
+    on_gpu = (gpu_guard is not None) and torch.cuda.is_available()
+    guard = gpu_guard if on_gpu else contextlib.nullcontext()
+    device = torch.device("cuda") if on_gpu else torch.device("cpu")
+
+    # Take the kwargs
+    ra_kwargs = ra_kwargs or {}
+    env_kwargs = env_kwargs or {}
+    step_kwargs = step_kwargs or {}
+
+    with guard:
+        # --- Build environment ---
+        env = SimulationEnvironment(episode, **env_kwargs, env_dirpath=metrics_dirpath)
+        env.setup_scenario()
+
+        # --- Build and wire up modules ---
+        ra_module = ra_method(env.c, env.wireless, env.geo, env.estimate, **ra_kwargs)
+        tx_module = TransmissionAbstraction(env.wireless, ra_module, device)
+
+        # Generate skewed mean velocities
+        mean_v = ut.sample_multivariate_gaussian(cov=env.geo.ue_vel_cov / 4, rng=env.rng)
+
+        trans_mat = np.eye(3)[np.newaxis, :, :].repeat(env.U, axis=0)
+        obs_mat = np.eye(3)[np.newaxis, :, :].repeat(env.U, axis=0)
+        proc_noise_cov = env.geo.ue_vel_cov * env.wireless.frame_time ** 2
+        obs_noise_cov = np.eye(3)[np.newaxis, :, :].repeat(env.U, axis=0)
+        tracker = LinearKalmanTracker(trans_mat, obs_mat, proc_noise_cov, obs_noise_cov)
+
+        performance = DMimoFarFieldOMA(env.c, env.wireless, env.geo, env.estimate)
+
+        env.setup_modules(ra_module, tx_module, tracker, performance)
+
+        # --- Run the simulation ---
+        frame_iter = ut.std_progressbar(range(env.c.num_frames), desc=msg) if not quiet else range(env.c.num_frames)
+        for _ in frame_iter:
+            v = np.stack([np.diagflat(m) for m in mean_v * env.geo.ue_location[env.frame] ** -1], axis=0)
+            trans_mat = np.eye(3)[np.newaxis, :, :].repeat(env.U, axis=0) + env.wireless.frame_time * v
+            env.tracker_module.update_model(F=trans_mat)
+            env.step(**step_kwargs)
+
+        # --- Save the whole run: Estimation, and Metrics parameters ---
+        if save_metrics:
+            ra_method_label = next(key for key, val in ra.available_methods.items() if val == ra_method)
+            filename = os.path.join(metrics_dirpath, f"{ra_method_label}_ep{episode:04d}.npz")
+            # remove channel from wireless
+            # env.wireless.channel = None
+            save_path = p.save_params_npz(filename, c=env.c, wireless=env.wireless, geo=env.geo,
+                                          estimate=env.estimate, metrics=env.metrics)
+
+        # --- Small scalar summary for quick cross-episode aggregation ---
+        summary = {
+            "save_path": save_path,
+            "avg_se_achievable": np.nanmean(env.metrics.se_achievable[:-1], axis=0),
+            "avg_se_set": np.nanmean(env.metrics.se_set[:-1], axis=0),
+            "avg_queue": np.nanmean(env.metrics.queue[:-1], axis=0),
+            "avg_misclassification": np.nanmean(env.metrics.misclassification[:-1], axis=0),
+            "avg_risk_predicted": np.nanmean(env.metrics.risk_predicted[:-1], axis=0),
+            "avg_risk_hat": np.nanmean(env.metrics.risk_hat[:-1], axis=0),
+        }
+        return summary
+
+
+
 results_labels = ["avg_se_achievable", "avg_se_set", "avg_queue", "avg_misclassification", "avg_risk_predicted", "avg_risk_hat"]
 
 
 if __name__ == "__main__":
-    num_ue = 18
+    num_ue = 6
     avg_datasize, queue_max = p.arrival_rate_init(avg_se=2, num_ue=num_ue)
-    env_args = {"debugging": True, "num_frames": 100, "num_ue": num_ue, "avg_datasize": avg_datasize, "queue_max": queue_max, "num_regions": 16}
+    env_args = {"debugging": True, "num_frames": 100, "num_ue": num_ue, "avg_datasize": avg_datasize, "queue_max": queue_max, "num_regions": 32}
     step_args = {"cfo": False}
-    summary = run_episode(1, ra.SemanticRiskAllocation, gpu_guard=threading.Semaphore(1), env_kwargs=env_args, step_kwargs=step_args,
+    summary = run_skewed(1, ra.SemanticRiskAllocation, gpu_guard=threading.Semaphore(1), env_kwargs=env_args, step_kwargs=step_args,
                           metrics_dirpath=os.path.join(os.getcwd(), "data_test"))
     print(summary)
