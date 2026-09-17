@@ -161,7 +161,7 @@ if __name__ == "__main__":
     metrics = ["queue", "se_achievable", "se_set", "misclassification", "risk_hat"]
 
     # Other parameters
-    data_path = os.path.join(p.DATA_FOLDER, "2026-09-16", "frame100_room200_speed14_U16")
+    data_path = os.path.join(p.DATA_FOLDER, "2026-09-16", "frame100_room200_speed14")
 
     ## TEST VS_UE
     # Generate dictionaries
