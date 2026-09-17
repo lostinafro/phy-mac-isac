@@ -79,7 +79,7 @@ scattering_pattern_dict = {
 }
 
 def common_parser():
-    # TODO: to be moved on the run_episode script
+    # TODO: to be moved on the run_episode script. Also, give for granted gpu, and ask for cpu instead (but doing it properly would be nice)
     parser = ArgumentParser(description="Common parser to run simulations.")
 
     parser.add_argument("--ra_method", type=str, default="", help="Method to use for RA simulation")
@@ -467,7 +467,7 @@ class GeometryParams:
         """
         return ut.which_region(points, self.semantic_regions, self.regions_idx)
 
-    def show(self, frame: int= 0,
+    def show(self, frame: int = -1,
              ax: plt.Axes | None = None, figsize: tuple=(6, 6), cmap_name: str = "tab20",
              ue_radius: float = 1., arrow_scale: float = 0.1,
              ap_width: float = 1., ap_length: float = 5.0) -> plt.Axes:
@@ -538,7 +538,7 @@ class GeometryParams:
                 color = ut.shade_of("blue", rng=self.c.rng)
                 circle = plt.Circle(pos, ue_radius, color=color, fill=True, zorder=4)
                 ax.add_patch(circle)
-                ax.text(pos[0], pos[1], f"{u}", fontsize="small", ha="center", va="bottom", zorder=5)
+                ax.text(pos[0], pos[1], f"{u}", fontsize="small", ha="center", va="bottom", zorder=6)
                 speed = np.hypot(*vel)
                 if speed > 1e-9:
                     ax.arrow(pos[0], pos[1], vel[0] * arrow_scale, vel[1] * arrow_scale,
@@ -576,7 +576,7 @@ class GeometryParams:
                          head_width=ap_width * 0.6, head_length=ap_width * 0.8,
                          fc="gray", ec="gray", zorder=5, length_includes_head=True)
                 # Insert AP number
-                ax.text(pos[0], pos[1], rf"{l}", fontsize=10, ha="center", va="bottom", zorder=5)
+                ax.text(pos[0], pos[1], rf"{l}", fontsize=10, ha="center", va="bottom", zorder=6)
 
         ax.set_aspect("equal", adjustable="box")
         ax.set_xlabel("x [m]")
@@ -605,6 +605,7 @@ class EstimationParams:
     ue_pos_hat_prio: np.ndarray | None = field(default=None, init=False)
     ue_pos_hat_post: np.ndarray | None = field(default=None, init=False)
     ue_pos_cov_prio: np.ndarray | None = field(default=None, init=False)
+    ue_pos_hat_meas: np.ndarray | None = field(default=None, init=False)
     ue_pos_cov_meas: np.ndarray | None = field(default=None, init=False)
     ue_pos_cov_post: np.ndarray | None = field(default=None, init=False)
     ue_region_hat: np.ndarray | None = field(default=None, init=False)
@@ -613,20 +614,25 @@ class EstimationParams:
         self.ue_pos_hat_prio = np.zeros((self.c.num_frames + 1, self.c.num_ue, 3))
         self.ue_pos_hat_post = np.zeros((self.c.num_frames + 1, self.c.num_ue, 3))
         self.ue_pos_cov_prio = np.zeros((self.c.num_frames + 1, self.c.num_ue, 3, 3))
-        self.ue_pos_cov_meas = np.zeros((self.c.num_frames + 1, self.c.num_ue, 3, 3))
+        self.ue_pos_hat_meas = np.full((self.c.num_frames + 1, self.c.num_ue, 3), np.nan)
+        self.ue_pos_cov_meas = np.full((self.c.num_frames + 1, self.c.num_ue, 3, 3), np.nan)
         self.ue_pos_cov_post = np.zeros((self.c.num_frames + 1, self.c.num_ue, 3, 3))
         self.ue_region_hat = -1 * np.ones((self.c.num_frames + 1, self.c.num_ue), dtype=np.int32)
 
-    def update(self, frame: int = 0, **kwargs):
-        """Update estimate parameters for the current frame with new values."""
+    def update(self, frame: int | np.ndarray = 0, idx: np.ndarray | None = None, **kwargs):
+        """Update estimate parameters for the selected frame with new values."""
+        if idx is None:
+            idx = np.arange(self.c.num_ue)
         for key, value in kwargs.items():
             if hasattr(self, key):
                 # Get the attribute
                 attr = getattr(self, key)
-
                 # If value has not the correct shape, numpy will raise IndexError
                 if isinstance(attr, np.ndarray):
-                    attr[frame] = value
+                    if "meas" in key:
+                        attr[frame, idx] = value
+                    else:
+                        attr[frame] = value
                     if key in ("ue_pos_hat_prio", "ue_pos_hat_post"):
                         self.ue_region_hat[frame] = self.geo.in_which_region(value)
                         out_of_regions =  self.ue_region_hat[frame] == -1
@@ -636,6 +642,70 @@ class EstimationParams:
                     setattr(self, key, value)
             else:
                 raise AttributeError(f"EstimateParams has no attribute '{key}'")
+
+    def show(self, ax: plt.Axes, frame: int = -1, kind: str = "post", confidence: float = 0.99,
+             ue_idx: np.ndarray | None = None) -> plt.Axes:
+        """Plot each UE's estimated (x, y) position as an 'x' marker, with a Gaussian
+        confidence-ellipse outline derived from the corresponding position covariance.
+
+        :param ax: matplotlib Axes to draw on.
+        :param frame: int, which stored frame to plot (default: -1, the initialization frame).
+        :param kind: str, one of {"prio", "meas", "post"} -- which estimate/covariance pair to use.
+        :param confidence: float, confidence level in (0, 1) for the covariance ellipse. Default 0.99.
+        :param ue_idx: np.ndarray | None, which UEs to plot. Default: all.
+
+        :returns: the Axes used for the plot.
+        """
+        if kind not in ("prio", "meas", "post"):
+            raise ValueError(f"kind must be one of 'prio', 'meas', 'post', got '{kind}'")
+        if not 0. < confidence < 1.:
+            raise ValueError(f"p must be in (0, 1), got {confidence}")
+
+        pos = getattr(self, f"ue_pos_hat_{kind}")[frame]  # (U, 3)
+        cov = getattr(self, f"ue_pos_cov_{kind}")[frame]  # (U, 3, 3)
+        ue_idx = np.arange(self.c.num_ue) if ue_idx is None else ue_idx
+
+        chi2_val = stats.chi2.ppf(confidence, df=2)  # Mahalanobis-distance^2 threshold enclosing probability p
+
+        for u in ue_idx:
+            mu = pos[u, :2]
+            sigma = cov[u, :2, :2]  # exact marginal (x,y) covariance -- drop the z row/column
+
+            if np.any(np.isnan(mu)):
+                continue  # e.g. "meas" wasn't updated for this UE at this frame
+
+            # Take color
+            color = ut.shade_of("grey", rng=self.c.rng)
+            # Add UE estimation and number
+            ax.plot(mu[0], mu[1], marker="x", color=color, markersize=4, zorder=5)
+            ax.text(mu[0], mu[1], f"{u}", color="gray", fontsize="x-small", ha="center", va="bottom", zorder=6)
+
+            # Eigendecomposition: eigenvalues = variances along the ellipse's principal axes,
+            # eigenvectors = their directions.
+            eigvals, eigvecs = np.linalg.eigh(sigma)
+            eigvals = np.clip(eigvals, a_min=0., a_max=None)  # guard tiny negative numerical noise
+
+            major_idx = np.argmax(eigvals)
+            minor_idx = np.argmin(eigvals)
+
+            # Semi-axis lengths sqrt(eigenvalue * chi2 quantile); Ellipse wants full width/height.
+            width = 2 * np.sqrt(eigvals[major_idx] * chi2_val)  # along the `angle` direction
+            height = 2 * np.sqrt(eigvals[minor_idx] * chi2_val)
+
+            # Orientation: angle of the eigenvector for the LARGER eigenvalue (major axis).
+            major_idx = np.argmax(eigvals)
+            angle = np.degrees(np.arctan2(eigvecs[1, major_idx], eigvecs[0, major_idx]))
+
+            if kind == "meas":
+                # The measured should be centered to the real UE location
+                mu = self.geo.ue_location[frame, u, :2]
+
+            ellipse = mpl.patches.Ellipse(xy=mu, width=width, height=height, angle=angle,
+                              edgecolor=color, facecolor="none", linewidth=1.2, zorder=4)
+            ax.add_patch(ellipse)
+
+
+        return ax
 
 
 @dataclass
@@ -688,10 +758,10 @@ class Metrics:
         self.gen_bit = np.zeros((self.c.num_frames + 1, self.c.num_ue))
         self.queue = np.zeros((self.c.num_frames + 1, self.c.num_ue), dtype=np.int32)
         self.delta_queue = np.zeros((self.c.num_frames + 1, self.c.num_ue), dtype=np.int32)
-        self.se_achievable = np.nan * np.zeros((self.c.num_frames + 1, self.c.num_ue))
-        self.se_set = np.nan * np.zeros((self.c.num_frames + 1, self.c.num_ue))
-        self.se_oracle = np.nan * np.zeros((self.c.num_frames + 1, self.c.num_ue))
-        self.sinr = np.nan * np.zeros((self.c.num_frames + 1, self.c.num_ue))
+        self.se_achievable = np.full((self.c.num_frames + 1, self.c.num_ue), np.nan)
+        self.se_set = np.full((self.c.num_frames + 1, self.c.num_ue), np.nan)
+        self.se_oracle = np.full((self.c.num_frames + 1, self.c.num_ue), np.nan)
+        self.sinr = np.full((self.c.num_frames + 1, self.c.num_ue), np.nan)
         self.efim_oracle = np.zeros((self.c.num_frames + 1, self.c.num_slots, self.c.num_ue, 3, 3))
         self.efim_predicted = np.zeros((self.c.num_frames + 1, self.c.num_slots, self.c.num_ue, 3, 3))
         self.misclassification = np.zeros((self.c.num_frames + 1, self.c.num_ue), dtype=bool)
@@ -699,9 +769,8 @@ class Metrics:
         self.risk_predicted = np.zeros((self.c.num_frames + 1, self.c.num_ue))
         self.risk_hat = np.zeros((self.c.num_frames + 1, self.c.num_ue))
 
-
-    def update(self, frame: int = 0, idx: np.ndarray | None = None, **kwargs):
-        """Update metrics for the current frame with new values."""
+    def update(self, frame: int | np.ndarray = 0, idx: np.ndarray | None = None, **kwargs):
+        """Update metrics for the selected frames with new values."""
         if idx is None:
             idx = np.arange(self.c.num_ue)
         for key, value in kwargs.items():
