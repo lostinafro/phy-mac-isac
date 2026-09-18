@@ -459,7 +459,7 @@ class SimulationEnvironment:
                             ue_slot_map=ue_slot_map,
                             )
         # Print errors
-        every = self.c.num_frames // 10
+        every = self.c.num_frames // 100
         if self.debug and (not (self.frame % every) or self.frame == self.c.num_frames - 1):
             if self.frame == 0:
                 frame_range = np.array([-1, 0])
@@ -469,14 +469,19 @@ class SimulationEnvironment:
             # self.scene_fig = self.show_environment(paths=paths, fig=getattr(self, "scene_fig", None))
             # self.scene_fig.canvas.draw_idle()
             # plt.pause(0.001)
+            try:
+                self.env_fig = self.show_estimation(frame=self.frame, fig=getattr(self, "scene_fig", None))
+                self.env_fig.canvas.draw_idle()
+                plt.pause(0.001)
+            except Exception as e:
+                print(f"Probably the figure dies in some way. Was it you?: {e}")
 
-            self.env_fig = self.show_estimation(frame=self.frame, fig=getattr(self, "scene_fig", None))
-            self.env_fig.canvas.draw_idle()
-            plt.pause(0.001)
-
-            self.channel_fig = self.plot_channel(channel, fig=getattr(self, "channel_fig", None))
-            self.channel_fig.canvas.draw_idle()
-            plt.pause(0.001)
+            try:
+                self.channel_fig = self.plot_channel(channel, fig=getattr(self, "channel_fig", None))
+                self.channel_fig.canvas.draw_idle()
+                plt.pause(0.001)
+            except Exception as e:
+                print(f"Probably the figure dies in some way. Was it you?: {e}")
 
             # Print starts
             print(f"----------------------- FRAME {self.frame:03d} -------------------------")
@@ -489,8 +494,15 @@ class SimulationEnvironment:
                 print(f"UE {u}: old_pos={msg1}, new_pos={msg2}, new_vel={msg3}")
 
             # Allocated UEs
-            msg = [f"{u:02d}" for u in np.sort(ue_idx)]
-            print(f"Allocated UEs are: {' '.join(msg)}")
+            msg = ' '.join([f"{u:02d}" for u in np.sort(ue_idx)])
+            print(f"Allocated UEs are: {msg}")
+            base_x = 0.1
+            self.env_fig.text(x=base_x, y=0.9, s=f"Allocated UEs: {msg}")
+            try:
+                msg = [f"{u:02d}" for u in np.sort(np.nonzero(self.ra_method.forced)[0])]
+                self.env_fig.text(x= 3 * base_x, y=0.9, s=f"Forced by comm: {' '.join(msg)}")
+            except ValueError:
+                pass
 
             # Test quasi-constant beta
             beta_full = np.abs(channel) ** 2
@@ -542,19 +554,28 @@ class SimulationEnvironment:
 
             # Semantic errors
             print("\nSEMA:")
-            msg = [f"{int(risk):02d}" for risk in np.nonzero(self.metrics.misclassification[self.frame])[0]]
-            print(f"UEs misclassified in this frame are: \t{' '.join(msg)}")
+            msg = ' '.join([f"{int(risk):02d}" for risk in np.nonzero(self.metrics.misclassification[self.frame])[0]])
+            print(f"UEs misclassified in this frame are: \t{msg}")
+            self.env_fig.text(x=base_x * 6, y=0.9, s=f"UEs misclassified: {msg}")
             msg = [f"{float(risk):.2e}" for risk in self.metrics.risk_predicted[self.frame]]
             print(f"UEs semantic risk predicted was: \t{' '.join(msg)}")
-            msg = [f"{float(risk):.2e}" for risk in self.metrics.risk_hat[self.frame]]
+            msg = [f"{float(risk):.3f}" for risk in self.metrics.risk_predicted_full[self.frame, :, 0]]
+            self.env_fig.text(x=base_x, y=0.87, s=f"hat_r0: {' '.join(msg)}")
+            msg = [f"{float(risk):.3f}" for risk in self.metrics.risk_predicted_full[self.frame, :, 1]]
+            self.env_fig.text(x=base_x, y=0.84, s=f"hat_r1: {' '.join(msg)}")
+            msg = [f"{float(risk):.3f}" for risk in self.metrics.risk_hat[self.frame]]
             print(f"UEs semantic risk approxim. was: \t{' '.join(msg)}")
-            msg = [f"{float(risk):.2e}" for risk in self.metrics.risk_hat[:frame_range[-1]].mean(0)]
+            msg = [f"{float(risk):.3f}" for risk in self.metrics.risk_hat[:frame_range[-1]].mean(0)]
             print(f"UEs avg risk appr up to frame {self.frame:03d}: \t{' '.join(msg)}")
-            msg = [f"{float(risk):.2e}" for risk in self.metrics.misclassification[:frame_range[-1]].mean(0)]
+            self.env_fig.text(x=base_x, y=0.81, s=f"riskh: {' '.join(msg)}")
+            msg = [f"{float(risk):.3f}" for risk in self.metrics.misclassification[:frame_range[-1]].mean(0)]
             print(f"UEs avg misprob up to frame {self.frame:03d}: \t{' '.join(msg)}")
+            self.env_fig.text(x=base_x, y=0.78, s=f"mispr: {' '.join(msg)}")
+
+            self.env_fig.savefig(os.path.join(self.env_folder, f"MAF_f{self.frame:02d}_ep{self.episode:02d}.png"))
 
             print("----------------------- END FRAME -------------------------\n")
-            breakpoint()
+            # breakpoint()
 
         # Check feasibility of the current allocation
         if np.any(np.sum(ue_slot_map, axis=-1) > 1):
@@ -637,6 +658,7 @@ class SimulationEnvironment:
             fig.clf()
             ax_prio, ax_meas, ax_post = fig.subplots(1, 3)
 
+        fig.suptitle(f"Frame: {frame}")
         titles = {"prio": "Prior", "meas": "Measured", "post": "Posterior"}
         for ax, kind in zip((ax_prio, ax_meas, ax_post), titles):
             self.geo.show(frame=frame, ax=ax)
@@ -849,11 +871,15 @@ class SimulationEnvironment:
         else:
             # Non-zero only on x, y (see sample_velocities)
             new_velocity = ut.sample_multivariate_gaussian(self.geo.ue_vel_cov, rng=self.rng)
-            new_position = old_position + new_velocity * self.wireless.frame_time
+            new_position = np.squeeze(self.tracker_module.F @ old_position[..., np.newaxis]) + new_velocity * self.wireless.frame_time
 
             # Clip new position within the environment boundaries
+            # ...by let it bounce back
             idx = np.array([self.geo.environment_shape.contains(sha.geometry.Point(p)) for p in new_position])
-            new_position[~idx] = old_position[~idx]
+            newF = 2 * np.eye(3) - self.tracker_module.F
+            new_position[~idx] = np.squeeze(newF[~idx] @ old_position[~idx, :, np.newaxis]) - new_velocity[~idx] * self.wireless.frame_time
+            # Improper
+            self.tracker_module.F[~idx] = newF[~idx]
 
             # Advance the frame counter, then store the new state there
             self.geo.update(self.frame, ue_location=new_position, ue_velocity=new_velocity)
@@ -1290,7 +1316,7 @@ def run_skewed(episode: int,
         tx_module = TransmissionAbstraction(env.wireless, ra_module, device)
 
         # Generate skewed mean velocities
-        mean_v = ut.sample_multivariate_gaussian(cov=env.geo.ue_vel_cov / 4, rng=env.rng)
+        mean_v = ut.sample_multivariate_gaussian(cov=env.geo.ue_vel_cov * 4, rng=env.rng)
 
         trans_mat = np.eye(3)[np.newaxis, :, :].repeat(env.U, axis=0)
         obs_mat = np.eye(3)[np.newaxis, :, :].repeat(env.U, axis=0)
@@ -1337,10 +1363,10 @@ results_labels = ["avg_se_achievable", "avg_se_set", "avg_queue", "avg_misclassi
 
 
 if __name__ == "__main__":
-    num_ue = 6
+    num_ue = 12
     avg_datasize, queue_max = p.arrival_rate_init(avg_se=2, num_ue=num_ue)
     env_args = {"debugging": True, "num_frames": 100, "num_ue": num_ue, "avg_datasize": avg_datasize, "queue_max": queue_max, "num_regions": 32}
     step_args = {"cfo": False}
-    summary = run_skewed(1, ra.SemanticRiskAllocation, gpu_guard=threading.Semaphore(1), env_kwargs=env_args, step_kwargs=step_args,
+    summary = run_skewed(1, ra.RoundRobinAllocation, gpu_guard=threading.Semaphore(1), env_kwargs=env_args, step_kwargs=step_args,
                           metrics_dirpath=os.path.join(os.getcwd(), "data_test"))
     print(summary)
