@@ -19,8 +19,9 @@ NUM_AP = 3
 NUM_ANT = 2
 NUM_UE = 18
 NUM_EP = int(1e2)
-ROOM_SIDE = 200             # [m]
-VEL_STD = 10                 # [m/s]
+ROOM_SIDE = 200            # [m]
+VEL_MAG = 5.                 # [m/s]
+VEL_STD = 10.                 # [m/s]
 REGIONS = 16
 UE_HEIGHT = 1.5             # [m]
 
@@ -86,13 +87,13 @@ def common_parser():
     parser.add_argument('--parallel', action='store_true', help="Enable parallel processing")
     parser.add_argument('--savesubdir', type=str, default="", help="Optional name of the subdirectory to save results in")
     parser.add_argument('--quiet', action='store_true', help="Quiet outputs")
-    parser.add_argument("--overwrite", action='store_true', help="Overwrite results  if already present in the savedir")
+    parser.add_argument("--overwrite", action='store_true', help="Overwrite results  if already present in the savesubdir")
     parser.add_argument("--concurrent", type=int, default=1, help="Set the number of concurrent scripts run")
-    parser.add_argument("--gpu", action='store_true', help="Set the GPU usage")
+    parser.add_argument("--cpu", action='store_true', help="Set the processing on the CPU only")
 
     args = parser.parse_args()
 
-    return args.ra_method, args.parallel, args.savesubdir, args.quiet, args.overwrite, args.concurrent, args.gpu
+    return args.ra_method, args.parallel, args.savesubdir, args.quiet, args.overwrite, args.concurrent, args.cpu
 
 ## CLASSES
 @dataclass
@@ -401,6 +402,7 @@ class GeometryParams:
     ap_orientation: Rotation | None = None
     antenna_location: np.ndarray | None = None
     antenna_spacing: float | None = None
+    ue_vel_mean: np.ndarray | None = None
     ue_vel_cov: np.ndarray | None = None
 
     # Computed attributes (excluded from __init__)

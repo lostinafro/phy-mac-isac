@@ -36,6 +36,7 @@ class SimulationEnvironment:
                  num_sym: int = p.NUM_SYM,
                  num_slot: int = p.NUM_SLOTS,
                  num_frames: int = p.NUM_FRAMES,
+                 rt_parameters: dict | None = None,
                  numerology: int = p.NUMEROLOGY,
                  carrier_freq: float = p.CARRIER,
                  ue_power: float = p.UE_POW,
@@ -45,7 +46,6 @@ class SimulationEnvironment:
                  scene_name: str | None = None,
                  scene_dirpath: str = p.SCENE_FOLDER,
                  area_coordinates: list | np.ndarray | None = None,
-                 rt_parameters: dict | None = None,
                  num_regions : int = p.REGIONS,
                  boundaries: np.ndarray | None = None,
                  debugging: bool = False,
@@ -224,6 +224,7 @@ class SimulationEnvironment:
                        ap_pos: float | np.ndarray | None = None,
                        antenna_spacing: float | None = None,
                        init_ue_pos: np.ndarray | None = None,
+                       ue_vel_mean: np.ndarray | float = 0.,
                        ue_vel_cov: np.ndarray | float = p.VEL_STD):
         """Set up the actual environment as it was at frame -1 (initial condition of the system).
 
@@ -243,9 +244,14 @@ class SimulationEnvironment:
             - ``None``: UEs are placed randomly within the area boundaries.
             - ``np.ndarray``: Explicit (U, 3) array of UE positions.
 
+        :param ue_vel_mean: velocity mean for the UEs. Can be:
+            - ``float``: Single value representing the magnitude of the speed for all UEs. Directons are randomly drawn.
+            - ``np.ndarray``: (U, ) array of UE speed magnitudes. Directions are randomly drawn.
+            - ``np.ndarray``: (U, 3) array of speed in Cartesian coordinate, one for each UE.
+
         :param ue_vel_cov: velocity covariance for the UEs. Can be:
             - ``float``: Standard deviation for a diagonal covariance matrix (σ²I) applied to all UEs.
-            - ``np.ndarray``: (U, 2, 2) array of covariance matrices, one for each UE.
+            - ``np.ndarray``: (U, 3, 3) array of covariance matrices, one for each UE.
 
         :raises AssertionError: If ``ue_vel_cov`` is an ndarray but does not have shape (U, 3, 3).
         :raises AttributeError: If ``ue_vel_cov`` is not an ndarray (handled internally to create default covariance).
@@ -274,9 +280,20 @@ class SimulationEnvironment:
             ap_pos, ap_rot, ant_pos = self.place_aps(antenna_spacing, ap_pos)
             init_ue_pos = self.ue_random_positioning() if init_ue_pos is None else init_ue_pos
 
-            # Set velocity covariance
+            # Set velocity mean and covariance
+            if isinstance(ue_vel_mean, (float, int)):
+                ue_vel_mean = np.ones(self.U) * ue_vel_mean
+            if isinstance(ue_vel_mean, np.ndarray):
+                if ue_vel_mean.shape == (self.U, ):
+                    orientation = self.rng.uniform(0, 2 * np.pi, self.U)
+                    direction = np.stack((np.cos(orientation), np.sin(orientation), np.zeros(self.U)), axis=-1)
+                    ue_vel_mean = ue_vel_mean[:, np.newaxis] * direction
+                elif ue_vel_mean.shape != (self.U, 3):
+                    raise ValueError("If an array, ue_vel_mean must have shape (U,) or (U, 3).")
+            else:
+                raise TypeError("ue_vel_cov must be an ndarray or a float.")
             try:
-                assert ue_vel_cov.shape == (self.U, 3, 3), "ue_vel_cov must have shape (U, 3, 3)"
+                assert ue_vel_cov.shape == (self.U, 3, 3), "If an array, ue_vel_cov must have shape (U, 3, 3)"
             except AttributeError:
                 # Set a standard diagonal matrix for all UE with sigma_x, sigma_y = V_max / 3 and sigma_z = 1e-9
                 ue_vel_cov = ue_vel_cov ** 2 * np.repeat(np.array(np.eye(3))[np.newaxis], self.U, axis=0)
@@ -289,6 +306,7 @@ class SimulationEnvironment:
                             antenna_location=ant_pos,
                             antenna_spacing=antenna_spacing,
                             ue_location=init_ue_pos,
+                            ue_vel_mean=ue_vel_mean,
                             ue_vel_cov=ue_vel_cov)
 
             # Sample LO offset at the initial frame for CTO and CFO residual baselines
@@ -345,6 +363,12 @@ class SimulationEnvironment:
         channel = self.compute_cfr(paths, cfo_base, cto_base)   # [L, M, U, S, T, F]
 
         ### Prior
+        # Update model if needed
+        if np.any(self.geo.ue_vel_mean != 0.):
+            norm_v = np.stack([np.diagflat(m) for m in self.geo.ue_vel_mean * self.geo.ue_location[self.frame - 1] ** -1], axis=0)
+            trans_mat = np.eye(3) + self.wireless.frame_time * norm_v
+            self.tracker_module.update_model(F=trans_mat)
+
         # Update through Kalman equations
         ue_pos_hat_pri, ue_pos_cov_pri = self.tracker_module.prior(self.estimate.ue_pos_hat_post[self.frame - 1],
                                                                    self.estimate.ue_pos_cov_post[self.frame - 1])
@@ -572,7 +596,10 @@ class SimulationEnvironment:
             print(f"UEs avg misprob up to frame {self.frame:03d}: \t{' '.join(msg)}")
             self.env_fig.text(x=base_x, y=0.78, s=f"mispr: {' '.join(msg)}")
 
-            self.env_fig.savefig(os.path.join(self.env_folder, f"MAF_f{self.frame:02d}_ep{self.episode:02d}.png"))
+            os.makedirs(self.env_folder, exist_ok=True)
+            ra_method_label = next(key for key, val in ra.available_methods.items() if val == type(self.ra_method))
+            filename = os.path.join(self.env_folder, f"{ra_method_label}_f{self.frame:02d}_ep{self.episode:02d}.png")
+            self.env_fig.savefig(filename, dpi=300)
 
             print("----------------------- END FRAME -------------------------\n")
             # breakpoint()
@@ -869,19 +896,19 @@ class SimulationEnvironment:
             new_position = self.geo.ue_location[self.frame]
             new_velocity = self.geo.ue_velocity[self.frame]
         else:
-            # Non-zero only on x, y (see sample_velocities)
-            new_velocity = ut.sample_multivariate_gaussian(self.geo.ue_vel_cov, rng=self.rng)
-            new_position = np.squeeze(self.tracker_module.F @ old_position[..., np.newaxis]) + new_velocity * self.wireless.frame_time
+            new_velocity = self.geo.ue_vel_mean + ut.sample_multivariate_gaussian(self.geo.ue_vel_cov, rng=self.rng)
+            new_position = old_position + new_velocity * self.wireless.frame_time
 
             # Clip new position within the environment boundaries
             # ...by let it bounce back
-            idx = np.array([self.geo.environment_shape.contains(sha.geometry.Point(p)) for p in new_position])
-            newF = 2 * np.eye(3) - self.tracker_module.F
-            new_position[~idx] = np.squeeze(newF[~idx] @ old_position[~idx, :, np.newaxis]) - new_velocity[~idx] * self.wireless.frame_time
-            # Improper
-            self.tracker_module.F[~idx] = newF[~idx]
+            out_idx = ~np.array([self.geo.environment_shape.contains(sha.Point(p)) for p in new_position])
+            if np.any(out_idx):
+                new_position[out_idx] = old_position[out_idx] - new_velocity[out_idx] * self.wireless.frame_time
+                # Update velocity
+                new_velocity[out_idx] = -new_velocity[out_idx]
+                self.geo.ue_vel_mean[out_idx] = - self.geo.ue_vel_mean[out_idx]
 
-            # Advance the frame counter, then store the new state there
+            # Store the new state there
             self.geo.update(self.frame, ue_location=new_position, ue_velocity=new_velocity)
 
         # Reflect the update in the scene
@@ -1082,7 +1109,7 @@ class SimulationEnvironment:
                 # Order is left-top first, then clockwise.
                 area_coordinates = np.array([[-1, 1, 0], [1, 1, 0], [1, -1, 0], [-1, -1, 0]]) * first_quadrant
                 # Default name
-                mesh_name = f"default_room_{p.ROOM_SIDE:02d}m"
+                mesh_name = f"default_room_{int(p.ROOM_SIDE):02d}m"
             else:
                 mesh_name = "custom_points" + "_".join([f"{int(x):02d}" for x in area_coordinates[:, :2].flatten()])
             scene = rt.load_scene()  # Empty sionna.rt scene
@@ -1217,8 +1244,11 @@ def run_episode(episode: int,
 
     with guard:
         # --- Build environment ---
-        env = SimulationEnvironment(episode, **env_kwargs, env_dirpath=metrics_dirpath)
-        env.setup_scenario()
+        init_kwargs = ut.filter_kwargs(SimulationEnvironment.__init__, **env_kwargs)
+        env = SimulationEnvironment(episode, **init_kwargs, env_dirpath=metrics_dirpath)
+
+        setup_kwargs = ut.filter_kwargs(env.setup_scenario, **env_kwargs)
+        env.setup_scenario(**setup_kwargs)
 
         # --- Build and wire up modules ---
         ra_module = ra_method(env.c, env.wireless, env.geo, env.estimate, **ra_kwargs)
@@ -1259,104 +1289,6 @@ def run_episode(episode: int,
             "avg_risk_hat": np.nanmean(env.metrics.risk_hat[:-1], axis=0),
         }
         return summary
-
-def run_skewed(episode: int,
-                ra_method: type[ra.ResourceAllocationBase],
-                ra_kwargs: dict | None = None,
-                env_kwargs: dict | None = None,
-                step_kwargs: dict | None = None,
-                gpu_guard: threading.Semaphore | None = None,
-                save_metrics: bool = True,
-                metrics_dirpath: str = p.DATA_FOLDER,
-                quiet: bool = False,
-                msg: str = "") -> dict:
-    """Run one full simulation episode: build the environment, wire up the modules, step
-    through every frame, then save the whole run's Shared/Geometric/Estimation/Metrics
-    parameters to a single .npz.
-
-    :param episode: int, episode index -- seeds the environment's RNG, and disambiguates
-        this run's output filename (must be the first positional argument).
-    :param ra_method: type[ResourceAllocationBase], a class from resource_allocation.py
-        (not an instance -- it's constructed here once env.c/wireless/geo/estimate exist),
-        e.g. `ra.RoundRobinAllocation` (must be the second positional argument).
-    :param ra_kwargs: dict | None, extra kwargs forwarded to `ra_method`'s constructor.
-    :param env_kwargs: dict | None, kwargs forwarded to `SimulationEnvironment.__init__`
-        (num_ue, num_ap, area_coordinates, lo_ppm, ue_power, ...). `episode` is filled in
-        automatically -- don't include it here.
-    :param step_kwargs: dict | None, kwargs forwarded to every `env.step(...)` call
-        (cto, cfo, sync).
-
-    :param gpu_guard: threading.Semaphore, set to the GPU access to grant.
-    :param save_metrics: bool, if False, skip saving (useful for quick interactive runs).
-    :param metrics_dirpath: str, directory the output .npz is written to.
-    :param quiet: bool, print a per-frame progress bar.
-    :param msg: str, message to display before the progress bar.
-
-    :returns: dict, small scalar summary (mean over frames) of a few key metrics, plus the
-        saved file path under "save_path" (None if save=False). Useful for a parameter-sweep
-        script to aggregate across episodes without re-reading every .npz.
-    """
-    ### Set up machine variables
-    on_gpu = (gpu_guard is not None) and torch.cuda.is_available()
-    guard = gpu_guard if on_gpu else contextlib.nullcontext()
-    device = torch.device("cuda") if on_gpu else torch.device("cpu")
-
-    # Take the kwargs
-    ra_kwargs = ra_kwargs or {}
-    env_kwargs = env_kwargs or {}
-    step_kwargs = step_kwargs or {}
-
-    with guard:
-        # --- Build environment ---
-        env = SimulationEnvironment(episode, **env_kwargs, env_dirpath=metrics_dirpath)
-        env.setup_scenario()
-
-        # --- Build and wire up modules ---
-        ra_module = ra_method(env.c, env.wireless, env.geo, env.estimate, **ra_kwargs)
-        tx_module = TransmissionAbstraction(env.wireless, ra_module, device)
-
-        # Generate skewed mean velocities
-        mean_v = ut.sample_multivariate_gaussian(cov=env.geo.ue_vel_cov * 4, rng=env.rng)
-
-        trans_mat = np.eye(3)[np.newaxis, :, :].repeat(env.U, axis=0)
-        obs_mat = np.eye(3)[np.newaxis, :, :].repeat(env.U, axis=0)
-        proc_noise_cov = env.geo.ue_vel_cov * env.wireless.frame_time ** 2
-        obs_noise_cov = np.eye(3)[np.newaxis, :, :].repeat(env.U, axis=0)
-        tracker = LinearKalmanTracker(trans_mat, obs_mat, proc_noise_cov, obs_noise_cov)
-
-        performance = DMimoFarFieldOMA(env.c, env.wireless, env.geo, env.estimate)
-
-        env.setup_modules(ra_module, tx_module, tracker, performance)
-
-        # --- Run the simulation ---
-        frame_iter = ut.std_progressbar(range(env.c.num_frames), desc=msg) if not quiet else range(env.c.num_frames)
-        for _ in frame_iter:
-            v = np.stack([np.diagflat(m) for m in mean_v * env.geo.ue_location[env.frame] ** -1], axis=0)
-            trans_mat = np.eye(3)[np.newaxis, :, :].repeat(env.U, axis=0) + env.wireless.frame_time * v
-            env.tracker_module.update_model(F=trans_mat)
-            env.step(**step_kwargs)
-
-        # --- Save the whole run: Estimation, and Metrics parameters ---
-        if save_metrics:
-            ra_method_label = next(key for key, val in ra.available_methods.items() if val == ra_method)
-            filename = os.path.join(metrics_dirpath, f"{ra_method_label}_ep{episode:04d}.npz")
-            # remove channel from wireless
-            # env.wireless.channel = None
-            save_path = p.save_params_npz(filename, c=env.c, wireless=env.wireless, geo=env.geo,
-                                          estimate=env.estimate, metrics=env.metrics)
-
-        # --- Small scalar summary for quick cross-episode aggregation ---
-        summary = {
-            "save_path": save_path,
-            "avg_se_achievable": np.nanmean(env.metrics.se_achievable[:-1], axis=0),
-            "avg_se_set": np.nanmean(env.metrics.se_set[:-1], axis=0),
-            "avg_queue": np.nanmean(env.metrics.queue[:-1], axis=0),
-            "avg_misclassification": np.nanmean(env.metrics.misclassification[:-1], axis=0),
-            "avg_risk_predicted": np.nanmean(env.metrics.risk_predicted[:-1], axis=0),
-            "avg_risk_hat": np.nanmean(env.metrics.risk_hat[:-1], axis=0),
-        }
-        return summary
-
 
 
 results_labels = ["avg_se_achievable", "avg_se_set", "avg_queue", "avg_misclassification", "avg_risk_predicted", "avg_risk_hat"]
@@ -1365,8 +1297,9 @@ results_labels = ["avg_se_achievable", "avg_se_set", "avg_queue", "avg_misclassi
 if __name__ == "__main__":
     num_ue = 12
     avg_datasize, queue_max = p.arrival_rate_init(avg_se=2, num_ue=num_ue)
-    env_args = {"debugging": True, "num_frames": 100, "num_ue": num_ue, "avg_datasize": avg_datasize, "queue_max": queue_max, "num_regions": 32}
+    env_args = {"debugging": True, "num_frames": 100, "num_ue": num_ue, "avg_datasize": avg_datasize,
+                "queue_max": queue_max, "num_regions": 32, "ue_vel_mean": 5}
     step_args = {"cfo": False}
-    summary = run_skewed(1, ra.RoundRobinAllocation, gpu_guard=threading.Semaphore(1), env_kwargs=env_args, step_kwargs=step_args,
-                          metrics_dirpath=os.path.join(os.getcwd(), "data_test"))
+    summary = run_episode(1, ra.RoundRobinAllocation, gpu_guard=threading.Semaphore(1), env_kwargs=env_args, step_kwargs=step_args,
+                          metrics_dirpath=os.path.join(os.getcwd(), "data_test_4"))
     print(summary)
