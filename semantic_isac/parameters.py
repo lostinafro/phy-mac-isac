@@ -20,7 +20,7 @@ NUM_ANT = 2
 NUM_UE = 18
 NUM_EP = int(1e2)
 ROOM_SIDE = 200             # [m]
-VEL_STD = 14                 # [m/s]
+VEL_STD = 10                 # [m/s]
 REGIONS = 16
 UE_HEIGHT = 1.5             # [m]
 
@@ -336,7 +336,7 @@ class WirelessParams:
         """Generate new data [bits] sampling from the defined distribution."""
         return self.traffic_pdf.rvs(scale=self.avg_datasize, random_state=self.c.rng).astype(int)
 
-    def datasize_from_load(self, load_factor: float, avg_se: float) -> float:
+    def datasize_from_load(self, load_factor: float, avg_se: float) -> tuple[float, float]:
         """Initialize the arrival rate for a given number of UEs, slots, symbols, and average data size."""
         return arrival_rate_init(self.c.num_ue, self.c.num_slots, avg_se, self.bw, self.slot_time, load_factor)
 
@@ -469,7 +469,7 @@ class GeometryParams:
 
     def show(self, frame: int = -1,
              ax: plt.Axes | None = None, figsize: tuple=(6, 6), cmap_name: str = "tab20",
-             ue_radius: float = 1., arrow_scale: float = 0.1,
+             ue_radius: float = 1., arrow_scale: float = 1,
              ap_width: float = 1., ap_length: float = 5.0) -> plt.Axes:
         """Plot the environment boundary and semantic regions.
 
@@ -685,26 +685,21 @@ class EstimationParams:
             eigvals, eigvecs = np.linalg.eigh(sigma)
             eigvals = np.clip(eigvals, a_min=0., a_max=None)  # guard tiny negative numerical noise
 
-            major_idx = np.argmax(eigvals)
-            minor_idx = np.argmin(eigvals)
-
+            # Eigenvalues are sorted in ascending ordered
             # Semi-axis lengths sqrt(eigenvalue * chi2 quantile); Ellipse wants full width/height.
-            width = 2 * np.sqrt(eigvals[major_idx] * chi2_val)  # along the `angle` direction
-            height = 2 * np.sqrt(eigvals[minor_idx] * chi2_val)
+            width, height = 2 * np.sqrt(eigvals[::-1] * chi2_val)
+            # width is along the `angle` direction
 
             # Orientation: angle of the eigenvector for the LARGER eigenvalue (major axis).
-            major_idx = np.argmax(eigvals)
-            angle = np.degrees(np.arctan2(eigvecs[1, major_idx], eigvecs[0, major_idx]))
+            angle = np.degrees(np.arctan2(eigvecs[1, 1], eigvecs[0, 1]))
 
             if kind == "meas":
-                # The measured should be centered to the real UE location
+                # The measured covariance are centered at the UE true location
                 mu = self.geo.ue_location[frame, u, :2]
 
             ellipse = mpl.patches.Ellipse(xy=mu, width=width, height=height, angle=angle,
                               edgecolor=color, facecolor="none", linewidth=1.2, zorder=4)
             ax.add_patch(ellipse)
-
-
         return ax
 
 
