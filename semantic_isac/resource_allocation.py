@@ -167,7 +167,8 @@ class ResourceAllocationBase(ABC):
             ue_mask = self.estimate.ue_region_hat[frame] == r
             if np.any(ue_mask):
                 bound_dist[ue_mask], bound_normal[ue_mask] = ut.boundary_dist_normal(self.estimate.ue_pos_hat_prio[frame, ue_mask],
-                                                                                     self.geo.semantic_regions.geoms[r])
+                                                                                     self.geo.semantic_regions.geoms[r],
+                                                                                     exclude_polygon=self.geo.environment_shape)
 
         risk0 = ut.qfun(bound_dist / np.squeeze(np.sqrt(np.matrix_transpose(bound_normal[..., np.newaxis])
                                                         @ covariance_pri @ bound_normal[..., np.newaxis])))
