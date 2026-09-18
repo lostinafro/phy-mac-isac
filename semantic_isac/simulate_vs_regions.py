@@ -34,8 +34,8 @@ num_regions_vec = 2 ** np.arange(1, 6)
 num_episodes = 100
 
 if __name__ == "__main__":
-    ra_methods, parallel, data_folder_suffix, quiet, overwrite, concurrent, on_gpu = p.common_parser()
-    # if on_gpu:
+    ra_methods, parallel, data_folder_suffix, quiet, overwrite, concurrent, on_cpu = p.common_parser()
+    # if not on_cpu:
     #     free_gpus = ut.select_available_gpus()
     #     if not free_gpus:
     #         print("No idle GPUs found -- falling back to CPU.")
@@ -79,10 +79,10 @@ if __name__ == "__main__":
                 # TODO: from here to the simulation start should be a function in utils.run
                 # CPU/GPU Performances
                 # Setting up maximum no. of workers and GPU semaphore to avoid oversubscription of CPU/GPU memory
-                cpu_slots, gpu_slots = ut.get_processing_resources(concurrent, on_gpu, p.NUM_UE)
+                cpu_slots, gpu_slots = ut.get_processing_resources(concurrent, on_cpu, p.NUM_UE)
                 cpu_workers = min(cpu_slots, num_episodes)
                 # Generate GPU semaphore
-                gpu_semaphore = threading.Semaphore(gpu_slots) if on_gpu else None
+                gpu_semaphore = threading.Semaphore(gpu_slots) if not on_cpu else None
 
                 # Define save folder per episode
                 save_ep_dirpath = os.path.join(data_folder, prefix + f"_R{num_regions:03d}")
@@ -103,8 +103,10 @@ if __name__ == "__main__":
                                                env_kwargs={"num_regions": int(num_regions),
                                                            "debugging": False,
                                                            "avg_datasize": avg_datasize,
-                                                           "queue_max": queue_max},
+                                                           "queue_max": queue_max,
+                                                           "ue_vel_mean": p.VEL_MAG},
                                                metrics_dirpath=save_ep_dirpath,
+                                               step_kwargs={"cfo": False},
                                                gpu_guard=gpu_semaphore, quiet=quiet,
                                                msg=f"RA: {ra_label} - R={num_regions:02d} - Episode: {ep:02d}/{num_episodes - 1:02d}"))
                 # Show the number of episodes remaining

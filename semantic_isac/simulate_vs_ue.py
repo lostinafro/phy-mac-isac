@@ -35,8 +35,8 @@ num_episodes = p.NUM_EP
 
 
 if __name__ == "__main__":
-    ra_methods, parallel, data_folder_suffix, quiet, overwrite, concurrent, on_gpu = p.common_parser()
-    # if on_gpu:
+    ra_methods, parallel, data_folder_suffix, quiet, overwrite, concurrent, on_cpu = p.common_parser()
+    # if not on_cpu:
     #     free_gpus = ut.select_available_gpus()
     #     if not free_gpus:
     #         print("No idle GPUs found -- falling back to CPU.")
@@ -79,16 +79,14 @@ if __name__ == "__main__":
 
             ## CPU/GPU Performances
             # Setting up maximum no. of workers and GPU semaphore to avoid oversubscription of CPU/GPU memory
-            cpu_slots, gpu_slots = ut.get_processing_resources(concurrent, on_gpu, num_ue)
+            cpu_slots, gpu_slots = ut.get_processing_resources(concurrent, on_cpu, num_ue)
             cpu_workers = min(cpu_slots, num_episodes)
             # Generate GPU semaphore
-            gpu_semaphore = threading.Semaphore(gpu_slots) if on_gpu else None
+            gpu_semaphore = threading.Semaphore(gpu_slots) if not on_cpu else None
 
             # Define save folder per episode
             save_ep_dirpath = os.path.join(data_folder, prefix + f"_U{num_ue:03d}")
             os.makedirs(save_ep_dirpath, exist_ok=True)
-
-
 
             ## Check which episodes have already been run
             results = []
@@ -105,7 +103,9 @@ if __name__ == "__main__":
                                            env_kwargs={"num_ue": int(num_ue),
                                                        "debugging": False,
                                                        "avg_datasize": avg_datasize[m],
-                                                       "queue_max": queue_max[m],},
+                                                       "queue_max": queue_max[m],
+                                                       "ue_vel_mean": p.VEL_MAG},
+                                           step_kwargs={"cfo": False},
                                            metrics_dirpath=save_ep_dirpath,
                                            gpu_guard=gpu_semaphore, quiet=quiet,
                                            msg=f"RA: {ra_label} - U={num_ue:02d} - Episode: {ep:02d}/{num_episodes - 1:02d}"))
