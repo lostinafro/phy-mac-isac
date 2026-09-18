@@ -840,7 +840,7 @@ uppath = lambda _path, n: os.sep.join(_path.split(os.sep)[:-n])
 
 
 def get_processing_resources(num_scripts: int,
-                             on_gpu: bool, num_ue: int = 1, mib_vram_per_ue: int | float = 200,
+                             on_cpu: bool, num_ue: int = 1, mib_vram_per_ue: int | float = 200,
                              mib_vram_baseline: int = 210,
                              usable_gpu_ids: list[int] | None = None):
     # TODO: the amount of GPU VRAM (in MiB) required per episode instead of per UE
@@ -849,14 +849,14 @@ def get_processing_resources(num_scripts: int,
     It considers a mib_vram_per_ue = 200 if not specified otherwise.
 
     :param num_scripts: Number of scripts to run simultaneously.
-    :param on_gpu: Whether to use GPU or not.
+    :param on_cpu: Whether to use GPU or not.
     :param num_ue: Number of UE instances to simulate.
     :param mib_vram_per_ue: Amount of VRAM (in MiB) required per episode to run on GPU.
     :param mib_vram_baseline: Amount of VRAM (in MiB) required for initialization processes.
     """
 
     cpu_slots = int(max(1, (os.cpu_count() // 2)  // num_scripts))
-    if on_gpu:
+    if not on_cpu:
         gpus = [g for g in GPUtil.getGPUs() if usable_gpu_ids is None or g.id in usable_gpu_ids]
         free_vram_mib = int(np.sum([gpu.memoryFree for gpu in gpus]))
         vram_per_episode = mib_vram_baseline + mib_vram_per_ue * num_ue
