@@ -363,15 +363,10 @@ class SimulationEnvironment:
         channel = self.compute_cfr(paths, cfo_base, cto_base)   # [L, M, U, S, T, F]
 
         ### Prior
-        # Update model if needed
-        if np.any(self.geo.ue_vel_mean != 0.):
-            norm_v = np.stack([np.diagflat(m) for m in self.geo.ue_vel_mean * self.geo.ue_location[self.frame - 1] ** -1], axis=0)
-            trans_mat = np.eye(3) + self.wireless.frame_time * norm_v
-            self.tracker_module.update_model(F=trans_mat)
-
         # Update through Kalman equations
         ue_pos_hat_pri, ue_pos_cov_pri = self.tracker_module.prior(self.estimate.ue_pos_hat_post[self.frame - 1],
-                                                                   self.estimate.ue_pos_cov_post[self.frame - 1])
+                                                                   self.estimate.ue_pos_cov_post[self.frame - 1],
+                                                                   u=self.geo.ue_vel_mean * self.wireless.frame_time)
 
         self.estimate.update(self.frame,
                              ue_pos_hat_prio=ue_pos_hat_pri,
@@ -1258,7 +1253,8 @@ def run_episode(episode: int,
         obs_mat = np.eye(3)[np.newaxis, :, :].repeat(env.U, axis=0)
         proc_noise_cov = env.geo.ue_vel_cov * env.wireless.frame_time ** 2
         obs_noise_cov = np.eye(3)[np.newaxis, :, :].repeat(env.U, axis=0)
-        tracker = LinearKalmanTracker(trans_mat, obs_mat, proc_noise_cov, obs_noise_cov)
+        control_mat = np.eye(3)[np.newaxis, :, :].repeat(env.U, axis=0)
+        tracker = LinearKalmanTracker(trans_mat, obs_mat, proc_noise_cov, obs_noise_cov, control_mat)
 
         performance = DMimoFarFieldOMA(env.c, env.wireless, env.geo, env.estimate)
 
