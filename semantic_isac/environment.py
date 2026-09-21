@@ -390,8 +390,8 @@ class SimulationEnvironment:
         # Compute predicted eFIM and rate with estimated values (shape (U, d, d))
         # Using 3dB margin to account for UL/DL mismatches
         beta_hat = self.estimate_gain_dl(self.estimate.ue_pos_hat_prio[self.frame]) / 2
-        predicted_efim = self.performance.eval_efim(snr, self.estimate.ue_pos_hat_prio[self.frame], beta_hat[..., np.newaxis].transpose())
-        predicted_se = self.performance.eval_achievable_se(beta_hat[..., np.newaxis].transpose(), len(self.ra_method.pilot_ofdm_symbol_indices()))
+        predicted_efim = np.squeeze(self.performance.eval_efim(snr, self.estimate.ue_pos_hat_prio[self.frame], beta_hat[..., np.newaxis].transpose()), axis=0)
+        predicted_se = np.squeeze(self.performance.eval_achievable_se(beta_hat[..., np.newaxis].transpose(), len(self.ra_method.pilot_ofdm_symbol_indices())), axis=0)
 
         # Compute allocation matrix based on the predictions
         kwargs = {"efim": predicted_efim, "covariance_pri": ue_pos_cov_pri, "delta_queue": delta_queue}

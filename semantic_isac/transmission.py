@@ -162,7 +162,7 @@ class TransmissionAbstraction(TransmissionBase):
         h_hat, err_var = self.ls_est(y, no)
         _, no_eff = self.mf_equ(y, h_hat, err_var, no)  # (S, U, 1, num_data_symbols)
 
-        sinr = torch.squeeze(1.0 / no_eff)  # (S, U, num_data_symbols)
+        sinr = torch.squeeze(1.0 / no_eff, dim=-2)  # (S, U, num_data_symbols)
         se = torch.mean(torch.log2(1.0 + sinr), dim=-1)  # (S, U)
 
 

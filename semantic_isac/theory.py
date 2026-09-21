@@ -96,7 +96,7 @@ class DMimoFarFieldOMA(PerformanceBase):
         #         somma += beta[..., l, np.newaxis, np.newaxis] * beta[..., k, np.newaxis, np.newaxis] * outer_lk[np.newaxis]
         # efim2 = 2 * snr[np.newaxis, :, np.newaxis, np.newaxis] * M * F * (nabla_xx - excess[..., np.newaxis, np.newaxis] * somma)
         # YES; unfortunately the formula is right.
-        return np.squeeze(efim)
+        return efim
 
     def eval_achievable_se(self, beta: np.ndarray, pilot_length: int):
         r"""Evaluate an achievable data rate obtained through use-and-then-forget-bound.
@@ -109,7 +109,7 @@ class DMimoFarFieldOMA(PerformanceBase):
         # Compute with the specific environment formula
         sum_beta = np.sum(beta, axis=-1)
         se = np.log2(1 + snr * self.c.num_ant * sum_beta ** 2 / (2 * sum_beta + self.c.num_ap / snr))
-        return np.squeeze((1 - pilot_length / self.c.num_sym) * se)
+        return (1 - pilot_length / self.c.num_sym) * se
 
 
 def eval_speb(efim: np.ndarray, covariance_pri: np.ndarray) -> tuple:

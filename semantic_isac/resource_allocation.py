@@ -173,7 +173,7 @@ class ResourceAllocationBase(ABC):
         risk0 = ut.qfun(bound_dist / np.squeeze(np.sqrt(np.matrix_transpose(bound_normal[..., np.newaxis])
                                                         @ covariance_pri @ bound_normal[..., np.newaxis])))
         risk1 = ut.qfun(bound_dist / np.squeeze(np.sqrt(np.matrix_transpose(bound_normal[..., np.newaxis])
-                                                        @ covariance_post @ bound_normal[..., np.newaxis])))
+                                                        @ covariance_post @ bound_normal[..., np.newaxis]), axis=(-2,-1)))
         delta_risk = risk0 - risk1
 
         return risk0, risk1, delta_risk
