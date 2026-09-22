@@ -1,6 +1,10 @@
 import numpy as np
+import pandas as pd
 import matplotlib.pyplot as plt
 import os
+
+from prometheus_client import samples
+
 from resource_allocation import available_methods
 import scipy.stats as stats
 import parameters as p
@@ -56,7 +60,7 @@ def output_results(num_vec: list | np.ndarray, datapath: str,
                         sample = sample[~np.isnan(sample)]
                         field_cdfs[field_label] = stats.ecdf(sample)
                     elif field_label in ["misclassification"]:
-                        sample = n_dict[method][field_label][:, :-1].mean(axis=1).flatten()
+                        sample = n_dict[method][field_label][:, :-1].mean(axis=0).flatten()
                         sample = sample[~np.isnan(sample)]
                         field_cdfs[field_label] = stats.ecdf(sample)
                     else:
@@ -161,21 +165,64 @@ if __name__ == "__main__":
     metrics = ["queue", "se_achievable", "se_set", "misclassification", "risk_hat"]
 
     # Other parameters
-    data_path = os.path.join(p.DATA_FOLDER, "2026-09-16", "frame100_room200_speed14")
+    data_path = os.path.join(p.DATA_FOLDER, "2026-09-21", "frame100_room200_speed10")
 
     ## TEST VS_UE
     # Generate dictionaries
     ue_dict, ue_cdfs = output_results(num_ue_vec, data_path, ra_labels, results_metrics, metrics, suffix="_vs_ue_U")
     reg_dict, reg_cdfs = output_results(num_regions_vec, data_path, ra_labels, results_metrics, metrics, suffix="_vs_regions_R")
 
+    # Save metrics
+    # Generate mean and 95% confidence intervals
+    # for metric in metrics:
+    #     df = pd.DataFrame()
+    #     for name in ra_labels:
+    #         avg = []
+    #         qua = []
+    #         lo = []
+    #         hi = []
+    #         for u, ue in enumerate(num_ue_vec):
+    #             data = ue_dict[u][name][metric][:,:-1].mean(0)
+    #             avg.append(data.mean())
+    #             qua.append(np.interp(0.95, ue_cdfs[u][name][metric].cdf.probabilities, ue_cdfs[u][name][metric].cdf.quantiles))
+    #             lo.append(np.percentile(data, 2.5))
+    #             hi.append(np.percentile(data, 97.5))
+    #         df[f"{name}_avg"] = avg
+    #         df[f"{name}_95"] = qua
+    #         df[f"{name}_lo"] = lo
+    #         df[f"{name}_hi"] = hi
+    #     df.insert(0, "U", np.arange(len(num_ue_vec)))
+    #     df.to_csv(os.path.join(data_path, f"{metric}_vs_ue.csv"), index=False)
+
+    for metric in metrics:
+        df = pd.DataFrame()
+        for name in ra_labels:
+            avg = []
+            qua = []
+            lo = []
+            hi = []
+            for r, reg in enumerate(num_regions_vec):
+                data = reg_dict[r][name][metric][:,:-1].mean(0)
+                avg.append(data.mean())
+                qua.append(np.interp(0.95, reg_cdfs[r][name][metric].cdf.probabilities, reg_cdfs[r][name][metric].cdf.quantiles))
+                lo.append(np.percentile(data, 2.5))
+                hi.append(np.percentile(data, 97.5))
+            df[f"{name}_avg"] = avg
+            df[f"{name}_95"] = qua
+            df[f"{name}_lo"] = lo
+            df[f"{name}_hi"] = hi
+        df.insert(0, "R", np.arange(len(num_regions_vec)))
+        df.to_csv(os.path.join(data_path, f"{metric}_vs_regions.csv"), index=False)
 
     # Plot CDFs
-    shared_args =dict(linestyle="dashed", linewidth=1, markersize=3)
-    fig_ue, ax_ue = plot_cdfs(num_ue_vec, ue_cdfs, metrics, ra_labels, colors, "UEs", method_markers=markers, **shared_args)
+    shared_args = dict(linestyle="dashed", linewidth=1, markersize=3)
+    fig_ue, ax_ue = plot_cdfs(num_ue_vec, ue_cdfs, metrics, ra_labels, colors, "UEs", method_markers=markers,
+                              **shared_args)
     filename = os.path.join(data_path, "cdf_vs_ue")
     fig_ue.savefig(filename + '.jpg', dpi=300, bbox_inches='tight')
 
-    fig_reg, ax_reg = plot_cdfs(num_regions_vec, reg_cdfs, metrics, ra_labels, colors, "R", method_markers=markers, **shared_args)
+    fig_reg, ax_reg = plot_cdfs(num_regions_vec, reg_cdfs, metrics, ra_labels, colors, "R", method_markers=markers,
+                                **shared_args)
     filename = os.path.join(data_path, "cdf_vs_reg")
     fig_reg.savefig(filename + '.jpg', dpi=300, bbox_inches='tight')
 
