@@ -2,9 +2,6 @@ import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 import os
-
-from prometheus_client import samples
-
 from resource_allocation import available_methods
 import scipy.stats as stats
 import parameters as p
@@ -60,7 +57,7 @@ def output_results(num_vec: list | np.ndarray, datapath: str,
                         sample = sample[~np.isnan(sample)]
                         field_cdfs[field_label] = stats.ecdf(sample)
                     elif field_label in ["misclassification"]:
-                        sample = n_dict[method][field_label][:, :-1].mean(axis=0).flatten()
+                        sample = n_dict[method][field_label][:, :-1].asint().flatten()
                         sample = sample[~np.isnan(sample)]
                         field_cdfs[field_label] = stats.ecdf(sample)
                     else:
@@ -165,7 +162,7 @@ if __name__ == "__main__":
     metrics = ["queue", "se_achievable", "se_set", "misclassification", "risk_hat"]
 
     # Other parameters
-    data_path = os.path.join(p.DATA_FOLDER, "2026-09-21", "frame100_room200_speed10")
+    data_path = os.path.join("/home/fabios/Nextcloud/data")
 
     ## TEST VS_UE
     # Generate dictionaries
