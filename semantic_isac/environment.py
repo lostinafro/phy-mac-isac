@@ -292,10 +292,10 @@ class SimulationEnvironment:
                     raise ValueError("If an array, ue_vel_mean must have shape (U,) or (U, 3).")
             else:
                 raise TypeError("ue_vel_cov must be an ndarray or a float.")
-            try:
+            if isinstance(ue_vel_cov, np.ndarray):
                 assert ue_vel_cov.shape == (self.U, 3, 3), "If an array, ue_vel_cov must have shape (U, 3, 3)"
-            except AttributeError:
-                # Set a standard diagonal matrix for all UE with sigma_x, sigma_y = V_max / 3 and sigma_z = 1e-9
+            else:
+                # Set a standard diagonal matrix for all UE with sigma_x, sigma_y = V_max and sigma_z = 1e-9
                 ue_vel_cov = ue_vel_cov ** 2 * np.repeat(np.array(np.eye(3))[np.newaxis], self.U, axis=0)
                 ue_vel_cov[:, 2, 2] = 1e-9
 
@@ -807,9 +807,13 @@ class SimulationEnvironment:
             offset = perimeter / (2 * self.L)
             distances = np.linspace(0, perimeter, self.L, endpoint=False) + offset
 
-            # Set the position (already 3D) and add the height
+            # Set the position (but check if) and add the height
             ap_cen_pos = np.array([boundary.interpolate(d).coords[0] for d in distances])
-            ap_cen_pos[:, 2] = ap_height
+            try:
+                ap_cen_pos[:, 2] = ap_height
+            except IndexError:
+                # The geometry is 2D
+                ap_cen_pos = np.hstack((ap_cen_pos, ap_height * np.ones((self.L, 1))))
 
         # Create the base array through Sionna built-in method
         ap_array = self._default_mimo_array(antenna_spacing)
@@ -1106,7 +1110,8 @@ class SimulationEnvironment:
                 # Default name
                 mesh_name = f"default_room_{int(p.ROOM_SIDE):02d}m"
             else:
-                mesh_name = "custom_points" + "_".join([f"{int(x):02d}" for x in area_coordinates[:, :2].flatten()])
+                convex_hull = area_coordinates[0] if isinstance(area_coordinates, list) else area_coordinates
+                mesh_name = "custom_points" + "_".join([f"{int(x):02d}" for x in convex_hull[:, :2].flatten()])
             scene = rt.load_scene()  # Empty sionna.rt scene
             # Generate just the floor by meshing the Polygon of the Area
             floor_material = rt.ITURadioMaterial("floor-material", "concrete",

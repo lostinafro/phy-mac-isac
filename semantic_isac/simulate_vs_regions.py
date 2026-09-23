@@ -30,7 +30,7 @@ def load_summary_from_npz(filepath: str, results_label: list[str]) -> dict:
     return summary
 
 ### MAIN SIMULATION PARAMETERS ###
-num_regions_vec = 2 ** np.arange(1, 6)
+num_regions_vec = np.array([2, 4, 8, 16, 32, 64])
 num_episodes = 100
 
 if __name__ == "__main__":

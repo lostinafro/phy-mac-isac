@@ -61,6 +61,24 @@ if __name__ == "__main__":
     # Compute datasize and queue_max
     # Check maximum load for non-trivial/non_explosive queues
     avg_datasize, queue_max = p.arrival_rate_init(avg_se=2, num_ue=num_ue_vec)
+    scale = 3
+
+    # Set the area and the regions
+    area = np.array([[-50, -60], [-50, 50], [60, 50], [60, -60], [20., -60], [20, 0], [-20, 0], [-20, -60]], dtype=np.float64)
+    area = scale * np.hstack((area, np.zeros((area.shape[0], 1))))
+
+    region1 = np.array([[-50, -60, 0], [-50, 0., 0], [-20, 0., 0], [-20, -60, 0]])
+    region2 = np.array([[-50, 0., 0], [-50, 50, 0], [60, 50, 0], [60, 0, 0]])
+    region3 = np.array([[20, 0., 0], [60, 0., 0], [60, -60, 0], [20, -60, 0]])
+    regions = scale * np.stack([region1, region2, region3], axis=0)
+
+    # Set initial ue_pos and velocity mean directions
+    xy_init_pos = scale * np.array([[-22, -5], [-40, 33], [48, -19], [3.5, -22.5], [30, -4]], dtype=np.float64)
+    ue_init_pos = np.hstack((xy_init_pos, 1.5*np.ones((xy_init_pos.shape[0], 1))))
+    vel_mean = p.VEL_MAG * np.array([[0, 1, 0], [0, -1.5, 0], [0.03, 0.9, 0], [0, 0, 0], [1, 0, 0]])
+    vel_std = p.VEL_STD
+
+    ap_location = scale * np.array([[60, -60., 10], [20, 50., 10], [-50, -20, 10]], dtype=np.float64)
 
     # Cycling through methods
     for ra_label in ra_methods:
@@ -102,12 +120,18 @@ if __name__ == "__main__":
                 episode_kwargs.append(dict(episode=ep, ra_method=ra_method,
                                            env_kwargs={"num_ue": int(num_ue),
                                                        "num_slot": 1,
-                                                       "num_regions": 4,
+                                                       "num_regions": len(regions),
                                                        "num_scs": 60,
+                                                       "num_ap": len(ap_location),
                                                        "debugging": True,
                                                        "avg_datasize": avg_datasize[m],
                                                        "queue_max": queue_max[m],
-                                                       "ue_vel_mean": p.VEL_MAG},
+                                                       "area_coordinates": area,
+                                                       "boundaries": regions,
+                                                       "init_ue_pos": ue_init_pos[:num_ue],
+                                                       "ap_pos": ap_location,
+                                                       "ue_vel_mean": vel_mean[:num_ue],
+                                                       "ue_vel_cov": vel_std},
                                            step_kwargs={"cfo": False},
                                            metrics_dirpath=save_ep_dirpath,
                                            gpu_guard=gpu_semaphore, quiet=quiet,

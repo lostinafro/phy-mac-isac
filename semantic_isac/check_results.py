@@ -57,7 +57,7 @@ def output_results(num_vec: list | np.ndarray, datapath: str,
                         sample = sample[~np.isnan(sample)]
                         field_cdfs[field_label] = stats.ecdf(sample)
                     elif field_label in ["misclassification"]:
-                        sample = n_dict[method][field_label][:, :-1].asint().flatten()
+                        sample = n_dict[method][field_label][:, :-1].mean(axis=0).flatten()
                         sample = sample[~np.isnan(sample)]
                         field_cdfs[field_label] = stats.ecdf(sample)
                     else:

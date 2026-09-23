@@ -34,11 +34,7 @@ def _compute_stat(data: np.ndarray, stat: str) -> float:
     m = _STAT_PATTERN.match(stat)
     if m:
         value, kind = float(m.group(1)), m.group(2)
-        if kind == "percentile":
-            cdf = stats.ecdf(data).cdf
-            return np.interp(value, cdf.probabilities, cdf.quantiles)
-        else:
-            return np.nanquantile(data, value)
+        return np.nanpercentile(data, value) if kind == "percentile" else np.nanquantile(data, value)
     raise ValueError(f"Unrecognized stat '{stat}'. Use 'mean', 'std', '<p>-percentile', or '<q>-quantile'.")
 
 
@@ -72,7 +68,6 @@ def _load_metric_flat(datapath: str, ra_label: str, num_episodes: int, field: st
 
 # Per-metric preprocessing, matching the special-casing in the original script.
 _FIELD_PREPROCESSORS = {
-    "risk_predicted": lambda arr: arr.sum(axis=-1),
     "misclassification": lambda arr: arr.mean(axis=0),
 }
 
@@ -147,26 +142,26 @@ def plot_cdfs(num_tests: list | np.ndarray,
         # Each column uses the same parameter
         ax[0, n].set_title(test_label + f": {value}" )
         # Cycle through different variables
-        for i, var_label in enumerate(metrics):
+        for me_idx, metric in enumerate(metrics):
             # Cycle through different methods
-            for phase, method in enumerate(methods):
+            for ra_idx, method in enumerate(methods):
                 try:
-                    cdf = cdfs[var_label][n, phase]
+                    cdf = cdfs[metric][n, ra_idx]
                     if cdf is not None:
                         # Always having max 10 markers
                         step = max(1, len(cdf["quantiles"]) // 10)
-                        mark_every = (phase * step // len(methods), step)
-                        ax[i, n].plot(cdf["quantiles"], cdf["probabilities"], label=method,
+                        mark_every = (ra_idx * step // len(methods), step)
+                        ax[me_idx, n].plot(cdf["quantiles"], cdf["probabilities"], label=method,
                                       color=method_colors[method], marker=method_markers[method],
                                       markevery=mark_every, **plot_shared_kwargs)
                 except Exception as e:
-                    print(f"Error plotting CDF for {method} and {var_label}: {e}")
+                    print(f"Error plotting CDF for {method} and {metric}: {e}")
             # If there is at least a label, print the legend
-            if ax[i, n].get_legend_handles_labels()[1]:
-               ax[i, n].legend()
-            ax[i, n].grid(True)
-            ax[i, n].set_xlabel(var_label)
-            ax[i, n].set_ylabel("CDF")
+            if ax[me_idx, n].get_legend_handles_labels()[1]:
+               ax[me_idx, n].legend()
+            ax[me_idx, n].grid(True)
+            ax[me_idx, n].set_xlabel(metric)
+            ax[me_idx, n].set_ylabel("CDF")
     fig.tight_layout()
     return fig, ax
 
@@ -178,22 +173,17 @@ cm = 1 / 2.54
 
 if __name__ == "__main__":
     # Define colors and markers for each RA method
-    ra_labels = list(available_methods.keys())
-    colors = dict(zip(available_methods.keys(), ["#ff0000", "#ffd700", "#ffb14e", "#fa8775", "#cd34b5", "#0000ff"]))
+    ra_labels = sorted(list(available_methods.keys()))
+    colors = dict(zip(ra_labels, ["#ff0000", "#fa8775", "#cd34b5", "#0000ff", "#ffd700", "#ffb14e"]))
     markers = dict(zip(available_methods.keys(), ["o", "s", "D", "p", "X", "v"]))
 
-    # Setting the results to read
-    results_metrics = ["queue_max", "queue",
-                      "se_achievable", "se_set", "sinr",
-                      "efim_oracle", "efim_predicted",
-                      "misclassification", "risk_hat"]
-    # Setting the results for cdf computation
+    # Setting the results for stat and cdf computation
     metrics = ["queue", "se_achievable", "se_set", "misclassification", "risk_hat"]
 
     # Other parameters
-    data_path = os.path.join("/home/fabios/Nextcloud/data")
+    data_path = os.path.join(os.path.expanduser("~"), "Nextcloud/data")
 
-    stats_list = ["mean", "95-percentile"]
+    stats_list = ["mean", "90-percentile", "95-percentile", "99-percentile"]
 
     # Shared plot args
     shared_plot_kwargs = dict(linestyle="dashed", linewidth=1, markersize=3)
@@ -216,15 +206,17 @@ if __name__ == "__main__":
                 print(f"\t{method}: " + " ".join(f"{stats_list[s]}={row[:, s]}" for s in range(len(stats_list))))
 
                 df[f"{method}_avg"] = row[:, 0]
-                df[f"{method}_95"] = row[:, 1]
+                df[f"{method}_90"] = row[:, 1]
+                df[f"{method}_95"] = row[:, 2]
+                df[f"{method}_99"] = row[:, 3]
             # Saving
 
             df.insert(0, var, np.arange(len(trial)))
-            df.to_csv(os.path.join(data_path, f"__{metric}_vs_{var}.csv"), index=False)
+            df.to_csv(os.path.join(data_path, f"{metric}_vs_{var}.csv"), index=False)
 
 
         # Plot CDFs
-        fig, ax = plot_cdfs(trial, cdfs, metrics, ra_labels, colors, "UEs", method_markers=markers,
+        fig, ax = plot_cdfs(trial, cdfs, metrics, ra_labels, colors, var, method_markers=markers,
                                   **shared_plot_kwargs)
-        filename = os.path.join(data_path, f"__cdf_vs_{var}")
+        filename = os.path.join(data_path, f"cdf_vs_{var}")
         fig.savefig(filename + '.jpg', dpi=300, bbox_inches='tight')

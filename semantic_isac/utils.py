@@ -646,7 +646,7 @@ def build_floor_mesh(polygon: Polygon | list | np.ndarray) -> trimesh.Trimesh:
     :returns: str, path to the exported .ply mesh.
     """
     if isinstance(polygon, list):
-        polygon = Polygon(*polygon)
+        polygon = sha.polygons(*polygon)
     elif isinstance(polygon, np.ndarray):
         polygon = Polygon(polygon)
     # Generate the mesh

@@ -428,7 +428,7 @@ class GeometryParams:
             self.semantic_regions = ut.split_polygon_voronoi(polygon=self.environment_shape,
                                                              n=self.c.num_regions,
                                                              rng=self.c.rng)
-            self.regions_idx = ut.build_spatial_index(self.semantic_regions)
+        self.regions_idx = ut.build_spatial_index(self.semantic_regions)
 
     def update(self, frame: int | np.ndarray = 0, **kwargs):
         """Update geometry parameters with new values."""
