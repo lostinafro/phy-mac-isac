@@ -108,7 +108,7 @@ class DMimoFarFieldOMA(PerformanceBase):
 
         # Compute with the specific environment formula
         sum_beta = np.sum(beta, axis=-1)
-        se = np.log2(1 + snr * self.c.num_ant * sum_beta ** 2 / (2 * sum_beta + self.c.num_ap / snr))
+        se = np.log2(1 + snr * pilot_length * self.c.num_ant * sum_beta ** 2 / ((1 + pilot_length) * sum_beta + self.c.num_ap / snr))
         return (1 - pilot_length / self.c.num_sym) * se
 
 
