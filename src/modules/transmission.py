@@ -1,8 +1,8 @@
 import sionna.phy as phy
 import numpy as np
 import torch
-import parameters as p
-import resource_allocation as ra
+import params
+from src.modules import resource_allocation as ra
 from abc import ABC, abstractmethod
 
 class TransmissionBase(ABC):
@@ -17,7 +17,7 @@ class TransmissionBase(ABC):
         transmission scheme.
     """
 
-    def __init__(self, wireless: p.WirelessParams, ra_module: ra.ResourceAllocationBase, device: torch.device):
+    def __init__(self, wireless: params.WirelessParams, ra_module: ra.ResourceAllocationBase, device: torch.device):
         self.wireless = wireless
         self.ra_module = ra_module
         self.device = device
@@ -46,7 +46,7 @@ class TransmissionCFR(TransmissionBase):
     _MOD_BITS = {"BPSK": 1, "QPSK": 2, "16QAM": 4, "64QAM": 6, "256QAM": 8}
     # TODO: set the class to be able to be called with different num_bit_per_sym, avoid naming the modulation, and output the empirical SE
 
-    def __init__(self, wireless: p.WirelessParams, ra_module: ra.ResourceAllocationBase, device: torch.device,
+    def __init__(self, wireless: params.WirelessParams, ra_module: ra.ResourceAllocationBase, device: torch.device,
                  modulation: str = "QPSK", coderate: float = 0.5):
         super().__init__(wireless, ra_module, device)
         try:
@@ -126,7 +126,7 @@ class TransmissionAbstraction(TransmissionBase):
     :param wireless: WirelessParams, used for a default noise level if `no` isn't given.
     """
 
-    def __init__(self, wireless: p.WirelessParams, ra_module: ra.ResourceAllocationBase, device: torch.device):
+    def __init__(self, wireless: params.WirelessParams, ra_module: ra.ResourceAllocationBase, device: torch.device):
         super().__init__(wireless, ra_module, device)
         self.apply_channel = phy.channel.ApplyOFDMChannel()
         self.rg_mapper = phy.ofdm.ResourceGridMapper(ra_module.rg)

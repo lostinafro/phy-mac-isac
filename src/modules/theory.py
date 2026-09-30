@@ -1,7 +1,6 @@
 import numpy as np
 from scipy.constants import speed_of_light
-import sionna.rt as rt
-from parameters import SharedParams, WirelessParams, GeometryParams, EstimationParams
+from params import SharedParams, WirelessParams, GeometryParams, EstimationParams
 from abc import ABC, abstractmethod
 
 class PerformanceBase(ABC):

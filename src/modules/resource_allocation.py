@@ -1,9 +1,10 @@
-import utils as ut
-import parameters as p
+from abc import ABC, abstractmethod
 import numpy as np
 import sionna.phy as phy
+
+import utils as ut
+from params import SharedParams, WirelessParams, GeometryParams, EstimationParams
 from theory import eval_speb
-from abc import ABC, abstractmethod
 
 
 class ResourceAllocationBase(ABC):
@@ -16,8 +17,8 @@ class ResourceAllocationBase(ABC):
     Subclasses implement the model-specific `slot_ue_association_mask`, and `__call__` methods. Optionally, custom
     `ap_ue_association_mask`, `_pilot_ofdm_symbol_indices`, and `rx_tx_association` methods can be implemented.
     """
-    def __init__(self, c: p.SharedParams, wireless: p.WirelessParams,
-                 geo: p.GeometryParams, estimate: p.EstimationParams):
+    def __init__(self, c: SharedParams, wireless: WirelessParams,
+                 geo: GeometryParams, estimate: EstimationParams):
         self.c = c
         self.wireless = wireless
         self.geo = geo
@@ -179,7 +180,7 @@ class ResourceAllocationBase(ABC):
         return risk0, risk1, delta_risk
 
     def eval_comm_risk(self, delta_queue: np.ndarray):
-        forced = delta_queue < self.wireless.traffic_pdf.ppf(self.wireless.queue_reliability, scale=self.wireless.avg_datasize)
+        forced = delta_queue < self.wireless.traffic_pdf.ppf(self.wireless.queue_reliability, scale=self.wireless.traffic_avg)
         return delta_queue, forced
 
 
@@ -209,11 +210,9 @@ class RoundRobinAllocation(ResourceAllocationBase):
     :param estimate: EstimationParams, current position/region estimates (same rationale as `geo`).
     """
 
-    def __init__(self, c: p.SharedParams, wireless: p.WirelessParams,
-                 geo: p.GeometryParams, estimate: p.EstimationParams):
+    def __init__(self, c: SharedParams, wireless: WirelessParams,
+                 geo: GeometryParams, estimate: EstimationParams):
         super().__init__(c, wireless, geo, estimate)
-        # Specific attributes
-        self._last_allocated_ues = None  #np.zeros(self.c.num_slots, dtype=np.int32)
 
 
     def slot_ue_association_mask(self) -> np.ndarray:
@@ -264,8 +263,8 @@ class SemanticRiskAllocation(ResourceAllocationBase):
         available for subclasses that allocate resources based on UE position/region).
     :param estimate: EstimationParams, current position/region estimates (same rationale as `geo`).
     """
-    def __init__(self, c: p.SharedParams, wireless: p.WirelessParams,
-                 geo: p.GeometryParams, estimate: p.EstimationParams):
+    def __init__(self, c: SharedParams, wireless: WirelessParams,
+                 geo: GeometryParams, estimate: EstimationParams):
         super().__init__(c, wireless, geo, estimate)
 
     def slot_ue_association_mask(self) -> np.ndarray:
@@ -324,8 +323,8 @@ class PebBasedAllocation(ResourceAllocationBase):
         available for subclasses that allocate resources based on UE position/region).
     :param estimate: EstimationParams, current position/region estimates (same rationale as `geo`).
     """
-    def __init__(self, c: p.SharedParams, wireless: p.WirelessParams,
-                 geo: p.GeometryParams, estimate: p.EstimationParams):
+    def __init__(self, c: SharedParams, wireless: WirelessParams,
+                 geo: GeometryParams, estimate: EstimationParams):
         super().__init__(c, wireless, geo, estimate)
 
     def slot_ue_association_mask(self) -> np.ndarray:
@@ -384,8 +383,8 @@ class SemanticRiskAllocationNoComm(ResourceAllocationBase):
     :param estimate: EstimationParams, current position/region estimates (same rationale as `geo`).
     """
 
-    def __init__(self, c: p.SharedParams, wireless: p.WirelessParams,
-                 geo: p.GeometryParams, estimate: p.EstimationParams):
+    def __init__(self, c: SharedParams, wireless: WirelessParams,
+                 geo: GeometryParams, estimate: EstimationParams):
         super().__init__(c, wireless, geo, estimate)
 
     def slot_ue_association_mask(self) -> np.ndarray:
@@ -429,8 +428,8 @@ class PebBasedAllocationNoComm(ResourceAllocationBase):
         available for subclasses that allocate resources based on UE position/region).
     :param estimate: EstimationParams, current position/region estimates (same rationale as `geo`).
     """
-    def __init__(self, c: p.SharedParams, wireless: p.WirelessParams,
-                 geo: p.GeometryParams, estimate: p.EstimationParams):
+    def __init__(self, c: SharedParams, wireless: WirelessParams,
+                 geo: GeometryParams, estimate: EstimationParams):
         super().__init__(c, wireless, geo, estimate)
 
     def slot_ue_association_mask(self) -> np.ndarray:
@@ -476,8 +475,8 @@ class QueueBasedAllocation(ResourceAllocationBase):
     :param estimate: EstimationParams, current position/region estimates (same rationale as `geo`).
     """
 
-    def __init__(self, c: p.SharedParams, wireless: p.WirelessParams,
-                 geo: p.GeometryParams, estimate: p.EstimationParams):
+    def __init__(self, c: SharedParams, wireless: WirelessParams,
+                 geo: GeometryParams, estimate: EstimationParams):
         super().__init__(c, wireless, geo, estimate)
         # Specific attributes
         self._last_allocated_ues = None  #np.zeros(self.c.num_slots, dtype=np.int32)
