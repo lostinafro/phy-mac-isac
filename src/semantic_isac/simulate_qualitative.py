@@ -6,10 +6,10 @@ from concurrent.futures import ThreadPoolExecutor
 import numpy as np
 import pandas as pd
 import warnings
-import resource_allocation as ra
+from src.modules import resource_allocation as ra
 import utils as ut
 import parameters as p
-from environment import run_episode, results_labels
+from scenario import run_episode, results_labels
 
 
 warnings.filterwarnings("ignore", category=RuntimeWarning)
@@ -124,7 +124,7 @@ if __name__ == "__main__":
                                                        "num_scs": 60,
                                                        "num_ap": len(ap_location),
                                                        "debugging": True,
-                                                       "avg_datasize": avg_datasize[m],
+                                                       "traffic_avg": avg_datasize[m],
                                                        "queue_max": queue_max[m],
                                                        "area_coordinates": area,
                                                        "boundaries": regions,

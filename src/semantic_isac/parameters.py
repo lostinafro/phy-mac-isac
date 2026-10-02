@@ -1,3 +1,5 @@
+import os
+from argparse import ArgumentParser
 import numpy as np
 from dataclasses import dataclass, field, fields, asdict, make_dataclass
 import rtree
@@ -10,8 +12,6 @@ import shapely as sha
 import matplotlib as mpl
 import matplotlib.pyplot as plt
 import sionna.rt as rt
-import os
-from argparse import ArgumentParser
 
 ## DEFAULT PARAMETERS
 # Scenario
@@ -40,10 +40,8 @@ QUEUE_RELIABILITY = 0.95         # 1 - epsilon in the paper
 UE_POW = ut.dbm2watt(-10)
 
 # DEFAULT FOLDERS
-FIGURE_FOLDER = os.path.join(os.getcwd(), "figs")
-DATA_FOLDER = os.path.join(os.getcwd(), "data")
+DATA_FOLDER = os.path.join(os.path.expanduser("~"), "OneDrive", "data")
 SCENE_FOLDER = os.path.join(os.getcwd(), "scenes")
-MESH_FOLDER = os.path.join(SCENE_FOLDER, "meshes")
 
 # RayTracer and RadioMap parameters
 RT_PARAM = {
@@ -80,7 +78,7 @@ scattering_pattern_dict = {
 }
 
 def common_parser():
-    # TODO: to be moved on the run_episode script. Also, give for granted gpu, and ask for cpu instead (but doing it properly would be nice)
+    # TODO: to be moved on the run_episode script. Try to properly setting when asking for cpu
     parser = ArgumentParser(description="Common parser to run simulations.")
 
     parser.add_argument("--ra_method", type=str, default="", help="Method to use for RA simulation")
@@ -667,7 +665,7 @@ class EstimationParams:
         cov = getattr(self, f"ue_pos_cov_{kind}")[frame]  # (U, 3, 3)
         ue_idx = np.arange(self.c.num_ue) if ue_idx is None else ue_idx
 
-        chi2_val = stats.chi2.ppf(confidence, df=2)  # Mahalanobis-distance^2 threshold enclosing probability p
+        chi2_val = stats.chi2.ppf(confidence, df=2)  # Mahalanobis-distance^2 threshold enclosing probability params
 
         for u in ue_idx:
             mu = pos[u, :2]

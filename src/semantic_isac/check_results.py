@@ -2,7 +2,7 @@ import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 import os
-from resource_allocation import available_methods
+from src.modules.resource_allocation import available_methods
 import scipy.stats as stats
 import parameters as p
 from simulate_vs_ue import num_ue_vec
@@ -151,7 +151,7 @@ if __name__ == "__main__":
     # Define colors and markers for each RA method
     ra_labels = list(available_methods.keys())
     colors = dict(zip(available_methods.keys(), ["#ff0000", "#ffd700", "#ffb14e", "#fa8775", "#cd34b5", "#0000ff"]))
-    markers = dict(zip(available_methods.keys(), ["o", "s", "D", "p", "X", "v"]))
+    markers = dict(zip(available_methods.keys(), ["o", "s", "D", "params", "X", "v"]))
 
     # Setting the results to read
     results_metrics = ["queue_max", "queue",

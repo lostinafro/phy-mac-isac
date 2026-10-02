@@ -6,7 +6,7 @@ import pandas as pd
 from scipy import stats
 import matplotlib.pyplot as plt
 
-from resource_allocation import available_methods
+from src.modules.resource_allocation import available_methods
 import parameters as p
 from simulate_vs_ue import num_ue_vec
 from simulate_vs_regions import num_regions_vec
@@ -20,7 +20,7 @@ def latex_look(pl):
 # Convention for `stats_list` entries:
 #   "mean"                -> np.nanmean
 #   "std"                 -> np.nanstd
-#   "<p>-percentile"      -> np.nanpercentile(data, p), p in [0, 100]  e.g. "95-percentile"
+#   "<params>-percentile"      -> np.nanpercentile(data, params), params in [0, 100]  e.g. "95-percentile"
 #   "<q>-quantile"        -> np.nanquantile(data, q),   q in [0, 1]    e.g. "0.95-quantile"
 _STAT_PATTERN = re.compile(r"^([\d.]+)-(percentile|quantile)$")
 
@@ -35,7 +35,7 @@ def _compute_stat(data: np.ndarray, stat: str) -> float:
     if m:
         value, kind = float(m.group(1)), m.group(2)
         return np.nanpercentile(data, value) if kind == "percentile" else np.nanquantile(data, value)
-    raise ValueError(f"Unrecognized stat '{stat}'. Use 'mean', 'std', '<p>-percentile', or '<q>-quantile'.")
+    raise ValueError(f"Unrecognized stat '{stat}'. Use 'mean', 'std', '<params>-percentile', or '<q>-quantile'.")
 
 
 def _load_metric_flat(datapath: str, ra_label: str, num_episodes: int, field: str,
@@ -175,7 +175,7 @@ if __name__ == "__main__":
     # Define colors and markers for each RA method
     ra_labels = sorted(list(available_methods.keys()))
     colors = dict(zip(ra_labels, ["#ff0000", "#fa8775", "#cd34b5", "#0000ff", "#ffd700", "#ffb14e"]))
-    markers = dict(zip(available_methods.keys(), ["o", "s", "D", "p", "X", "v"]))
+    markers = dict(zip(available_methods.keys(), ["o", "s", "D", "params", "X", "v"]))
 
     # Setting the results for stat and cdf computation
     metrics = ["queue", "se_achievable", "se_set", "misclassification", "risk_hat"]
