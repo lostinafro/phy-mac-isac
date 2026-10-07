@@ -133,10 +133,6 @@ class TransmissionAbstraction(TransmissionBase):
         self.ls_est = phy.ofdm.LSChannelEstimator(ra_module.rg, interpolation_type="nn")
         self.mf_equ = phy.ofdm.MFEqualizer(ra_module.rg, ra_module.sm)
 
-        # Test the abstraction module
-        # self.precoder = phy.ofdm.precoding.EyePrecodedChannel(ra_module.rg, ra_module.sm)
-        # self.sinr_eval = phy.ofdm.LMMSEPostEqualizationSINR(ra_module.rg, ra_module.sm)
-
         # Moving the blocks to the right device
         for block in (self.rg_mapper, self.ls_est, self.mf_equ):
             if isinstance(block, torch.nn.Module):
@@ -168,13 +164,7 @@ class TransmissionAbstraction(TransmissionBase):
 
         sinr = torch.squeeze(1.0 / no_eff, dim=-2)  # (S, U, num_data_symbols)
 
-        # Test the abstraction module
-        # h_eff = self.precoder(h, power)
-        # h_hat_eff = self.precoder(h_hat, power)
-        # sinr2 = self.sinr_eval(h_eff, no, h_hat_eff)
-
         se = torch.mean(torch.log2(1.0 + sinr), dim=-1)  # (S, U)
-
 
         return sinr, se
 
