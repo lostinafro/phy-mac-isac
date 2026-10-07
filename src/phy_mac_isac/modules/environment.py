@@ -10,12 +10,12 @@ import sionna.rt as rt
 import sionna.phy as phy
 import contextlib
 
-import resource_allocation as ra
-from transmission import TransmissionBase, SEuplinkOFDMpostMRC
-from trackers import TrackerBase, LinearKalmanTracker
-from theory import PerformanceBase, DMimoFarFieldOMA
-import params
-import utils as ut
+from . import resource_allocation as ra
+from .transmission import TransmissionBase, SEuplinkOFDMpostMRC
+from .trackers import TrackerBase, LinearKalmanTracker
+from .theory import PerformanceBase, DMimoFarFieldOMA
+from . import params
+from .. import utils as ut
 
 
 class SimulationEnvironment:

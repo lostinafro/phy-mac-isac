@@ -3,14 +3,14 @@ import os
 import numpy as np
 import torch
 from matplotlib import pyplot as plt
-import utils as ut
+from . import utils as ut
 import contextlib
-import parameters as p
-from src.modules import resource_allocation as ra
-from src.modules.transmission import SEuplinkOFDMpostMRC
-from src.modules.trackers import LinearKalmanTracker
-from src.modules.theory import DMimoFarFieldOMA
-from src.modules.environment import SimulationEnvironment
+from ..modules import params
+from ..modules import resource_allocation as ra
+from ..modules.transmission import SEuplinkOFDMpostMRC
+from ..modules.trackers import LinearKalmanTracker
+from ..modules.theory import DMimoFarFieldOMA
+from ..modules.environment import SimulationEnvironment
 
 
 class SemanticISACScenario(SimulationEnvironment):
@@ -97,8 +97,7 @@ class SemanticISACScenario(SimulationEnvironment):
         # Also, merge the dimensions on the antennas to consider a single receiver with distributed placement and
         # add a single UE stream dimension
         channel_cf = np.moveaxis(channel.copy(), 3, 0)  # [S, L, M, U, T, F]
-        channel_cf = channel_cf.reshape(self.S, 1, self.L * self.M, self.U, 1, self.T,
-                                        self.F)  # [S, 1, L*M, U, 1, T, F]
+        channel_cf = channel_cf.reshape(self.S, 1, self.L * self.M, self.U, 1, self.T, self.F)    # [S, 1, L*M, U, 1, T, F]
 
         # Apply the allocation mask
         channel_cf *= self.ra_method.broadcast_slot_ue_mask(ue_slot_map) * self.ra_method.broadcast_ap_ue_mask()
@@ -114,10 +113,8 @@ class SemanticISACScenario(SimulationEnvironment):
         se_per_scheduled_ue[se_per_scheduled_ue > se_achievable] = 0.
         # Re-init margin for UE with achievable SE while reducing margin for UE with unachievable SE
         if self.frame < self.c.num_frames - 1:
-            self.se_margin[self.frame + 1:, ue_idx[se_per_scheduled_ue > 0.]] /= self.se_margin[
-                0, ue_idx[se_per_scheduled_ue > 0.]]
-            self.se_margin[self.frame + 1:, ue_idx[se_per_scheduled_ue == 0.]] *= self.se_margin[
-                0, ue_idx[se_per_scheduled_ue == 0.]]
+            self.se_margin[self.frame + 1:, ue_idx[se_per_scheduled_ue > 0.]] /= self.se_margin[0, ue_idx[se_per_scheduled_ue > 0.]]
+            self.se_margin[self.frame + 1:, ue_idx[se_per_scheduled_ue == 0.]] *= self.se_margin[0, ue_idx[se_per_scheduled_ue == 0.]]
 
         # Taking the amount of bits transmitted and update the queue
         bits_tx = np.asarray(np.floor(se_per_scheduled_ue * self.wireless.bw * self.wireless.slot_time), dtype=np.int32)
@@ -210,8 +207,7 @@ class SemanticISACScenario(SimulationEnvironment):
 
             # Test quasi-constant beta
             beta_full = np.abs(channel) ** 2
-            mask = np.nonzero(
-                np.any(np.abs(beta_full - beta[:, np.newaxis, :, :, np.newaxis, np.newaxis]) > 1e-6, axis=(1, 4, 5)))
+            mask = np.nonzero(np.any(np.abs(beta_full - beta[:, np.newaxis, :, :, np.newaxis, np.newaxis]) > 1e-6, axis=(1, 4, 5)))
             if len(mask[0]) > 0:
                 for idx in range(len(mask[0])):
                     print(f"Not quasi-constant beta for AP {mask[0][idx]}, UE {mask[1][idx]} and slot {mask[2][idx]}")
@@ -241,8 +237,7 @@ class SemanticISACScenario(SimulationEnvironment):
                 print(f"Queue within limits for all UEs")
             msg = [f"{int(q):04d}" for q in self.metrics.queue[frame_range].mean(0)]
             print(f"UEs avg. frames {frame_range[0]:02d}/{self.frame:02d} queue status is: \t{' '.join(msg)}")
-            msg = [f"{float(q) * 100:02.1f}%" for q in
-                   (self.metrics.queue[:frame_range[-1]] < self.wireless.queue_max).mean(0)]
+            msg = [f"{float(q) * 100:02.1f}%" for q in (self.metrics.queue[:frame_range[-1]] < self.wireless.queue_max).mean(0)]
             print(f"UEs queue reliability up to frame {self.frame:03d}: \t{' '.join(msg)}")
 
             # Cartesian errors
@@ -255,9 +250,7 @@ class SemanticISACScenario(SimulationEnvironment):
             print(f"Per UE priori PEB is: \t{' '.join(msg)}")
             msg = [f"{peb:.2f}" for peb in np.sqrt(np.linalg.trace(ue_pos_cov_post))]
             print(f"Per UE poster PEB is: \t{' '.join(msg)}")
-            msg = [f"{rse:.2f}" for rse in
-                   np.linalg.norm(self.geo.ue_location[self.frame] - self.estimate.ue_pos_hat_post[self.frame],
-                                  axis=-1)]
+            msg = [f"{rse:.2f}" for rse in np.linalg.norm(self.geo.ue_location[self.frame] - self.estimate.ue_pos_hat_post[self.frame], axis=-1)]
             print(f"Per UE poste RMSE is: \t{' '.join(msg)}")
 
             # Semantic errors
@@ -305,7 +298,7 @@ def run_episode(episode: int,
                 step_kwargs: dict | None = None,
                 gpu_guard: threading.Semaphore | None = None,
                 save_metrics: bool = True,
-                metrics_dirpath: str = p.DATA_FOLDER,
+                metrics_dirpath: str = params.DATA_FOLDER,
                 quiet: bool = False,
                 msg: str = "") -> dict:
     """Run one full simulation episode: build the environment, wire up the modules, step
@@ -346,8 +339,9 @@ def run_episode(episode: int,
 
     with guard:
         # --- Build environment ---
-        init_kwargs = ut.filter_kwargs(SimulationEnvironment.__init__, **env_kwargs)
-        env = SimulationEnvironment(episode, **init_kwargs, env_dirpath=metrics_dirpath)
+        sha_kwargs = ut.filter_kwargs(params.SharedParams, **env_kwargs)
+        wir_kwargs = ut.filter_kwargs(params.WirelessParams, **env_kwargs)
+        env = SimulationEnvironment(episode, sha_kwargs, wir_kwargs, env_dirpath=metrics_dirpath)
 
         setup_kwargs = ut.filter_kwargs(env.setup_scenario, **env_kwargs)
         env.setup_scenario(**setup_kwargs)
@@ -378,7 +372,7 @@ def run_episode(episode: int,
             filename = os.path.join(metrics_dirpath, f"{ra_method_label}_ep{episode:04d}.npz")
             # remove channel from wireless
             # env.wireless.channel = None
-            save_path = p.save_params_npz(filename, c=env.c, wireless=env.wireless, geo=env.geo,
+            save_path = params.save_params_npz(filename, c=env.c, wireless=env.wireless, geo=env.geo,
                                           estimate=env.estimate, metrics=env.metrics)
 
         # --- Small scalar summary for quick cross-episode aggregation ---
@@ -399,7 +393,7 @@ results_labels = ["avg_se_achievable", "avg_se_set", "avg_queue", "avg_misclassi
 
 if __name__ == "__main__":
     num_ue = 12
-    avg_datasize, queue_max = p.arrival_rate_init(avg_se=2, num_ue=num_ue)
+    avg_datasize, queue_max = params.arrival_rate_init(avg_se=2, num_ue=num_ue)
     env_args = {"debugging": True, "num_frames": 100, "num_ue": num_ue, "traffic_avg": avg_datasize,
                 "queue_max": queue_max, "num_regions": 32, "ue_vel_mean": 5}
     step_args = {"cfo": False}

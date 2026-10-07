@@ -1,0 +1,49 @@
+[build-system]
+requires = ["setuptools>=77", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "phy-mac-isac"
+version = "0.1.0"
+description = "Physical and MAC layer simulation tools for integrated sensing and communications"
+readme = "README.md"
+requires-python = ">=3.10"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{name = "Fabio Saggese"}]
+keywords = ["ISAC", "wireless", "simulation", "Sionna"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Science/Research",
+    "Programming Language :: Python :: 3",
+    "Topic :: Scientific/Engineering",
+]
+dependencies = [
+    "GPUtil",
+    "matplotlib",
+    "mitsuba",
+    "numpy",
+    "pandas",
+    "rtree",
+    "scipy",
+    "shapely",
+    "sionna",
+    "torch",
+    "tqdm",
+    "trimesh",
+]
+
+[project.urls]
+Repository = "https://github.com/lostinafro/phy-mac-isac"
+Documentation = "https://github.com/lostinafro/phy-mac-isac/blob/develop/docs/usage.md"
+Issues = "https://github.com/lostinafro/phy-mac-isac/issues"
+
+[project.optional-dependencies]
+dev = ["build", "twine"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["phy_mac_isac*"]
+
+[tool.setuptools.package-data]
+"phy_mac_isac.semantic_isac" = ["scenes/meshes/*.ply", "scenes/rm/*.npz"]
