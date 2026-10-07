@@ -11,7 +11,7 @@ import sionna.phy as phy
 import contextlib
 
 import resource_allocation as ra
-from transmission import TransmissionBase, TransmissionAbstraction
+from transmission import TransmissionBase, SEuplinkOFDMpostMRC
 from trackers import TrackerBase, LinearKalmanTracker
 from theory import PerformanceBase, DMimoFarFieldOMA
 import params
@@ -42,19 +42,23 @@ class SimulationEnvironment:
         - User Equipment (UEs) and their mobility (positions and velocities).
         - OFDM (Orthogonal Frequency-Division Multiplexing) parameters for the physical layer.
 
-        :param episode: int, unique identifier for the simulation episode. Used for logging, seeding randomness,
+        :param episode: ``int``, a unique identifier for the simulation episode. Used for logging, seeding randomness,
             or distinguishing between multiple runs.
 
-        :param shared_params: dict, shared parameters for the simulation containing the kwys in params.SharedParams.
-        :param wireless_params: dict, wireless parameters for the simulation containing the kwys in params.WirelessParams.
+        :param shared_params: ``dict``, shared parameters for the simulation containing the keys in params.SharedParams.
+        :param wireless_params: ``dict``, wireless parameters for the simulation containing the keys in params.WirelessParams.
 
         :param area_coordinates: Coordinates defining the boundaries of the simulation area as vertices of a polygon.
-            Shape: (A, 3) for a Polygon area of A vertices (e.g., [[x_min, y_min, 0], [x_max, y_max, 0]] for a rectangle).
-            If None, a default area of a 200-meter side square centered on the origin is created.
+            It can be:
+                - ``np.ndarray`` of shape (A, 3) for a Polygon area of A vertices (e.g., [[x_min, y_min, 0],
+                [x_max, y_max, 0]] for a rectangle).
+                - ``list`` of `len` 2: the first elements is the (A,3)-shape ``np.ndarray`` of vertices (see above), and
+                    the second being the (B,3)-shape ``np.ndarray`` of vertices of the holes for non-convex polygons.
+                - ``None``, then a default area of a 200-meter side square centered on the origin is created.
 
         .. note::
            - The ``episode`` parameter can be used to seed random number generators for reproducibility.
-           - ``area_coordinate`` does not really use the last dimension, but it is required to have the same shape
+           - ``area_coordinates`` does not really use the last dimension, but it is required to have the same shape
              as other geometric properties.
         """
         # Randomization
@@ -140,12 +144,12 @@ class SimulationEnvironment:
         self.path_solver = rt.PathSolver()      # Solver module for path evaluation in the ray tracer
 
         # Resource allocation, transmission and tracker modules
-        self.ra_method: ra.ResourceAllocationBase = None    # Resource allocation module, giving the allocation on a frame
-        self.transmission_module: TransmissionBase = None   # Transmission module, simulating wireless signal processing
-        self.tracker_module: TrackerBase = None             # Tracker module, needed for location tracking
+        self.ra_method: type[ra.ResourceAllocationBase] = None    # Resource allocation module, giving the allocation on a frame
+        self.transmission_module: type[TransmissionBase] = None   # Transmission module, simulating wireless signal processing
+        self.tracker_module: type[TrackerBase] = None             # Tracker module, needed for location tracking
 
         # Theoretical evaluation modules
-        self.performance: PerformanceBase = None   # Module for theoretic performance evaluation
+        self.performance: type[PerformanceBase] = None   # Module for theoretic performance evaluation
 
         # Set up the environment at frame -1 (last element for the dataclasses attributes)
         self.frame = -1             # Denote the current number of the frame
@@ -155,11 +159,11 @@ class SimulationEnvironment:
         self.se_margin = np.ones((self.c.num_frames, self.U)) * .9
 
     def setup_modules(self,
-                      ra_algorithm: ra.ResourceAllocationBase,
-                      transmission_module: TransmissionBase,
-                      tracker_module: TrackerBase,
-                      performance: PerformanceBase):
-        """Set scheduling, transmission, tracking and evaluation modules to be used."""
+                      ra_algorithm: type[ra.ResourceAllocationBase],
+                      transmission_module: type[TransmissionBase],
+                      tracker_module: type[TrackerBase],
+                      performance: type[PerformanceBase]):
+        """Set scheduling, transmission, tracking, and evaluation modules to be used."""
         self.ra_method = ra_algorithm
         self.transmission_module = transmission_module
         self.tracker_module = tracker_module
@@ -177,7 +181,7 @@ class SimulationEnvironment:
         configuring antenna arrays, computing distances, setting velocity covariances, and initializing 
         estimation variables. It represents the state of the system at the beginning (frame -1).
 
-        :param ap_pos: position(s) of the Access Points. Can be:
+        :param ap_pos: Position(s) of the Access Points. It can be:
             - ``None``: APs are placed at default symmetric positions with height = 5 [m].
             - ``float``: z-axis height for symmetric AP placement.
             - ``np.ndarray``: Explicit (L, 3) array of AP positions.
@@ -1196,7 +1200,7 @@ def run_episode(episode: int,
 
         # --- Build and wire up modules ---
         ra_module = ra_method(env.c, env.wireless, env.geo, env.estimate, **ra_kwargs)
-        tx_module = TransmissionAbstraction(env.wireless, ra_module, device)
+        tx_module = SEuplinkOFDMpostMRC(env.wireless, ra_module, device)
 
         trans_mat = np.eye(3)[np.newaxis, :, :].repeat(env.U, axis=0)
         obs_mat = np.eye(3)[np.newaxis, :, :].repeat(env.U, axis=0)

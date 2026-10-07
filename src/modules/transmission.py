@@ -7,8 +7,8 @@ from abc import ABC, abstractmethod
 
 class TransmissionBase(ABC):
     """Abstract base class for a physical-layer transmission scheme -- something that takes a
-    channel realization plus a resource grid / stream management, and produces a transmission
-    outcome (bits sent, bits recovered, channel estimate, etc).
+    channel realization plus a resource grid / stream management and produces a transmission
+    outcome (bits sent, bits recovered, channel estimate, etc.).
 
     Subclasses must implement `__call__`. Instantiating `TransmissionBase` directly raises
     `TypeError`, as with any ABC.
@@ -39,8 +39,7 @@ class TransmissionCFR(TransmissionBase):
     :param wireless: WirelessParams, used for a default noise level if `no` isn't given.
     :param modulation: str, one of {"BPSK","QPSK","16QAM","64QAM","256QAM"}. Default "QPSK".
     :param coderate: float, LDPC code rate (k/n). Default 0.5. Must fall within the range
-        supported by Sionna's 5G LDPC encoder for the resulting `n` (roughly 1/5 to 0.95);
-        otherwise `LDPC5GEncoder` raises with an explanatory error.
+        supported by Sionna's 5G LDPC encoder for the resulting `n` (roughly 1/5 to 0.95).        
     """
 
     _MOD_BITS = {"BPSK": 1, "QPSK": 2, "16QAM": 4, "64QAM": 6, "256QAM": 8}
@@ -69,7 +68,7 @@ class TransmissionCFR(TransmissionBase):
             the per-slot slice of `compute_cfr`'s [L, M, U, S, T, F] output using S as it where batches
         :param resource_allocation: ResourceAllocationBase, instance of the resource allocation algorithm used
          :param tx_power: np.ndarray | float | None, per-UE transmit power (linear), shape
-            (U,) or scalar. Defaults to `self.wireless.ue_power`.
+            (U, ) or scalar. Defaults to `self.wireless.ue_power`.
         :param no: float | None, noise power spectral density (linear). If None, defaults to
             `self.wireless.n0b_ap` -- check this scaling matches your link budget before relying
             on the default; it's a placeholder, not a validated noise-power derivation.
@@ -116,9 +115,9 @@ class TransmissionCFR(TransmissionBase):
         return h_hat, b, b_hat, x, x_hat, no_eff
 
 
-class TransmissionAbstraction(TransmissionBase):
+class SEuplinkOFDMpostMRC(TransmissionBase):
     """PHY-layer abstraction of an uplink OFDM transmission: computes the post-combining
-    SINR (and Shannon spectral efficiency) from LS channel estimation + MR (matched-filter)
+    SINR (and Shannon spectral efficiency) from LS channel estimation and MR (matched-filter)
     combining, without any bit-level LDPC encoding/decoding or QAM mapping/demapping.
     Substantially cheaper than TransmissionCFR when only link-quality metrics are needed,
     in the spirit of Sionna SYS's PHY-abstraction functionality.
@@ -177,7 +176,7 @@ class TransmissionAbstraction(TransmissionBase):
             TransmissionCFR.
         :param resource_allocation: ResourceAllocationBase, providing `.rg`/`.sm`.
         :param tx_power: np.ndarray | float | None, per-UE transmit power (linear), shape
-            (U,) or scalar. Defaults to `self.wireless.ue_power`.
+            (U, ) or scalar. Defaults to `self.wireless.ue_power`.
         :param no: float | None, noise PSD (linear). Defaults to `self.wireless.n0b_ap`.
 
         :returns: tuple (sinr, se) --
