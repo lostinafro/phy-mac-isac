@@ -3,8 +3,8 @@ import os
 import numpy as np
 import torch
 from matplotlib import pyplot as plt
-from . import utils as ut
 import contextlib
+from .. import utils as ut
 from ..modules import params
 from ..modules import resource_allocation as ra
 from ..modules.transmission import SEuplinkOFDMpostMRC

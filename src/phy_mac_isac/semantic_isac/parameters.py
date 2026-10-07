@@ -8,7 +8,7 @@ from scipy.spatial.transform import Rotation
 from scipy.constants import speed_of_light
 import scipy.stats as stats
 
-from . import utils as ut
+from .. import utils as ut
 import shapely as sha
 import matplotlib as mpl
 import matplotlib.pyplot as plt
