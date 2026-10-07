@@ -1,24 +1,24 @@
 import os
-from argparse import ArgumentParser
+from pathlib import Path
 import numpy as np
 from dataclasses import dataclass, field, fields, asdict, make_dataclass
-import rtree
 from scipy.spatial.transform import Rotation
 from scipy.constants import speed_of_light
 import scipy.stats as stats
-
-import utils as ut
 import shapely as sha
-import matplotlib as mpl
+import rtree
 import matplotlib.pyplot as plt
-import sionna.rt as rt
+from matplotlib import colormaps, patches
+from sionna.rt import DirectivePattern, LambertianPattern, RadioMap
+from sionna.rt.utils import subcarrier_frequencies
+
+from .. import utils as ut
 
 ## DEFAULT PARAMETERS
 # Scenario
 NUM_AP = 3
 NUM_ANT = 2
 NUM_UE = 18
-NUM_EP = int(1e2)
 ROOM_SIDE = 200            # [m]
 VEL_MAG = 5.                 # [m/s]
 VEL_STD = 10.                 # [m/s]
@@ -38,10 +38,11 @@ DATASIZE_AVG = 2048
 QUEUE_MAX = int(10 * DATASIZE_AVG)
 QUEUE_RELIABILITY = 0.95         # 1 - epsilon in the paper
 UE_POW = ut.dbm2watt(-10)
+AP_POW = ut.dbm2watt(23)
 
 # DEFAULT FOLDERS
 DATA_FOLDER = os.path.join(os.path.expanduser("~"), "OneDrive", "data")
-SCENE_FOLDER = os.path.join(os.getcwd(), "scenes")
+SCENE_FOLDER = os.environ.get("PHY_MAC_ISAC_SCENE_DIR", str(Path(__file__).resolve().parents[1] / "semantic_isac" / "scenes"))
 
 # RayTracer and RadioMap parameters
 RT_PARAM = {
@@ -68,30 +69,15 @@ scattering_coefficient_dict = {
 }
 
 scattering_pattern_dict = {
-    "vacuum": rt.LambertianPattern(),
-    "glass": rt.DirectivePattern(1),
-    "concrete": rt.LambertianPattern(),
-    "brick": rt.LambertianPattern(),
-    "marble": rt.DirectivePattern(1),
-    "metal": rt.DirectivePattern(1),
-    "wood": rt.LambertianPattern()
+    "vacuum": LambertianPattern(),
+    "glass": DirectivePattern(1),
+    "concrete": LambertianPattern(),
+    "brick": LambertianPattern(),
+    "marble": DirectivePattern(1),
+    "metal": DirectivePattern(1),
+    "wood": LambertianPattern()
 }
 
-def common_parser():
-    # TODO: to be moved on the run_episode script. Try to properly setting when asking for cpu
-    parser = ArgumentParser(description="Common parser to run simulations.")
-
-    parser.add_argument("--ra_method", type=str, default="", help="Method to use for RA simulation")
-    parser.add_argument('--parallel', action='store_true', help="Enable parallel processing")
-    parser.add_argument('--savesubdir', type=str, default="", help="Optional name of the subdirectory to save results in")
-    parser.add_argument('--quiet', action='store_true', help="Quiet outputs")
-    parser.add_argument("--overwrite", action='store_true', help="Overwrite results  if already present in the savesubdir")
-    parser.add_argument("--concurrent", type=int, default=1, help="Set the number of concurrent scripts run")
-    parser.add_argument("--cpu", action='store_true', help="Set the processing on the CPU only")
-
-    args = parser.parse_args()
-
-    return args.ra_method, args.parallel, args.savesubdir, args.quiet, args.overwrite, args.concurrent, args.cpu
 
 ## CLASSES
 @dataclass
@@ -109,11 +95,7 @@ class SharedParams:
     :ivar num_frames: int, number of frames. Frame 0 is the initial state of the environment.
     :ivar num_regions: int, number of semantic regions within the environment.
     :ivar rays: dict, ray tracing key-value parameters.
-    :ivar num_target: int, number of passive targets in the environment.
-    :ivar num_car: int, number of cars in the environment.
-    :ivar rng: np.random.Generator, random number generator used for simulation.
     """
-
     num_ap: int = NUM_AP
     num_ant_h: int = NUM_ANT
     num_ant_v: int = 1
@@ -124,31 +106,39 @@ class SharedParams:
     num_slots: int = NUM_SLOTS
     num_frames: int = NUM_FRAMES
     num_regions: int = REGIONS
-    # RayTracerSimulator
     rays: dict | None = None
     # Not used yet
     num_target: int = 0
     num_car: int = 0
 
-    # Generator
-    rng: np.random.Generator = np.random.default_rng()
-
     def __post_init__(self):
         self.num_ant = self.num_ant_h * self.num_ant_v
-        
+
         if self.rays is None:
             self.rays = RT_PARAM
+
 
 @dataclass
 class WirelessParams:
     """Parameters related to wireless communication.
 
+    :ivar c: SharedParams object containing common simulation parameters.
     :ivar numerology: 5G NR numerology index (μ). Determines subcarrier spacing and slot duration.
         μ=0 → 15 kHz, μ=1 → 30 kHz, etc.
     :ivar carrier: Carrier frequency in Hz (e.g., 3.5e9 for 3.5 GHz).
-    :ivar c: SharedParams object containing common simulation parameters.
-    :ivar slot_time: Duration of a slot in seconds, computed as 1e-3 / 2^μ.
+    :ivar lo_ppm: Nominal part-per-million error of the transmitter's Local oscillators (LO).
+    :ivar ue_power: UE available transmit power in Watts.
+    :ivar ap_power: APs available transmit power in Watts.
+    :ivar traffic_avg: Average incoming packet size in bits.
+    :ivar traffic_pdf: Probability density function of incoming packet sizes.
+    :ivar queue_max: Maximum queue size in bits.
+    :ivar queue_reliability: Reliability of queue not exceeding queue_max (e.g., 0.99 for 99% reliability).
+    :ivar guard_time: Guard time between frames in seconds. It can account for signaling overhead, synchronization,
+        and other frame-related activities.
+
+    :ivar cp_time: Duration of the cyclic prefix (CP) in seconds.
     :ivar sym_time: Duration of an OFDM symbol in seconds (useful symbol time 1/sc_spacing plus cp_time).
+    :ivar slot_time: Duration of a slot in seconds, computed as 1e-3 / 2^μ.
     :ivar frame_time: Duration of a frame in seconds (includes DL/UL signaling overhead).
     :ivar sc_spacing: Subcarrier spacing in Hz (15e3 * 2^μ).
     :ivar rb_spacing: Resource block (RB) spacing in Hz (12 * sc_spacing).
@@ -159,19 +149,27 @@ class WirelessParams:
     :ivar bw: Total bandwidth in Hz (sc_spacing * num_scs).
     :ivar nob_ap: Thermal noise power at APs (W).
     :ivar nob_ue: Thermal noise power at UEs (W).
-    :ivar lo_ppm: Nominal part-per-million error of the transmitter's Local oscillators (LO).
+    :ivar cto_base: Clock timing offset (CTO) due to LO drift in Hz. Generated through the sample_lo_offset method from lo_ppm.
+    :ivar cfo_base: Carrier frequency offset (CFO) due to LO drift in Hz. Generated through the sample_lo_offset method from lo_ppm.
+
     """
     c: SharedParams
-    numerology: int
-    carrier: float
-    lo_ppm: float | np.ndarray = 0.
-    ue_power: float | np.ndarray = None
-    ap_power: float | np.ndarray = None
-    avg_datasize : np.ndarray = None
+    numerology: int = NUMEROLOGY
+    carrier: float = CARRIER
+    # Oscillator part-per-million error
+    lo_ppm: float | np.ndarray = PPM_XO
+    # Available power at APs and UEs
+    ue_power: float | np.ndarray = UE_POW
+    ap_power: float | np.ndarray = AP_POW
+    # Incoming traffic and queue sizes
+    traffic_avg: float | np.ndarray = DATASIZE_AVG
     traffic_pdf: stats.rv_continuous = stats.expon
-    # Performance guarantees
-    queue_reliability: float = None
-    queue_max: np.ndarray = None
+    queue_max: float | np.ndarray = QUEUE_MAX
+    # Performance guarantees TODO: remove it from here, it is dependent on the scenario not the UE
+    queue_reliability: float | np.ndarray = QUEUE_RELIABILITY
+
+    # Guard time between frames [s].
+    guard_time: float = 0.
 
     # Computed attributes (excluded from __init__)
     cp_time: float = field(init=False)
@@ -189,7 +187,6 @@ class WirelessParams:
     nob_ue: float = field(init=False)
     cfo_base: np.ndarray = field(init=False)
     cto_base: np.ndarray = field(init=False)
-    channel: np.ndarray = field(init=False)
 
     def __post_init__(self):
         """Compute derived attributes after initialization."""
@@ -197,8 +194,7 @@ class WirelessParams:
         self.slot_time = 1e-3 / 2 ** self.numerology
 
         # Compute frame_time from slot_time and S (assuming the same number of DL slots)
-        guard = 0.09
-        self.frame_time = self.slot_time * (2 * self.c.num_slots) + guard
+        self.frame_time = self.slot_time * (2 * self.c.num_slots) + self.guard_time
 
         # Compute subcarrier spacing
         self.sc_spacing = 15e3 * 2 ** self.numerology
@@ -211,7 +207,7 @@ class WirelessParams:
         self.sym_time = self.cp_time + 1 / self.sc_spacing
 
         # Compute indexes
-        self.freqs = np.array(rt.utils.subcarrier_frequencies(self.c.num_scs, self.sc_spacing))
+        self.freqs = np.array(subcarrier_frequencies(self.c.num_scs, self.sc_spacing))
         self.sc_index = np.array(self.freqs / self.sc_spacing, dtype=np.int32)
         self.sym_index = np.arange(self.c.num_slots * self.c.num_sym)
         self.times = self.sym_index * self.sym_time
@@ -221,20 +217,16 @@ class WirelessParams:
         self.bw = self.sc_spacing * self.c.num_scs
 
         # Check LO_PPM
-        if isinstance(self.lo_ppm, float):
+        if isinstance(self.lo_ppm, (float, int)):
             self.lo_ppm = np.ones(self.c.num_ue) * self.lo_ppm
         # Set CTO and CFO at zero at first
         self.cfo_base = np.zeros(self.c.num_ue)
         self.cto_base = np.zeros(self.c.num_ue)
 
-        # Compute power
-        if self.ue_power is None:
-            self.ue_power = np.ones(self.c.num_ue) * ut.dbm2watt(10)
-        elif isinstance(self.ue_power, float):
+        # Spread available power for UE and APs
+        if isinstance(self.ue_power, (float, int)):
             self.ue_power = np.ones(self.c.num_ue) * self.ue_power
-        if self.ap_power is None:
-            self.ap_power = np.ones(self.c.num_ap) * ut.dbm2watt(30)
-        elif isinstance(self.ap_power, float):
+        if isinstance(self.ap_power, (float, int)):
             self.ap_power = np.ones(self.c.num_ap) * self.ap_power
 
         # Compute thermal noise
@@ -242,18 +234,13 @@ class WirelessParams:
         self.nob_ue = ut.thermal_noise(self.bw, noise_figure=9.0)
 
         # Compute datasize and queue
-        if self.avg_datasize is None:
-            self.avg_datasize = DATASIZE_AVG * np.ones(self.c.num_ue, dtype=int)
-        elif isinstance(self.avg_datasize, float):
-            self.avg_datasize = np.ones(self.c.num_ue) * self.avg_datasize
-        if self.queue_max is None:
-            self.queue_max = QUEUE_MAX * np.ones(self.c.num_ue, dtype=np.int32)
-        if self.queue_reliability is None:
-            self.queue_reliability = QUEUE_RELIABILITY * np.ones(self.c.num_ue)
+        if isinstance(self.traffic_avg, (float, int)):
+            self.traffic_avg = np.ones(self.c.num_ue) * self.traffic_avg
+        if isinstance(self.queue_max, (float, int)):
+            self.queue_max = self.queue_max * np.ones(self.c.num_ue, dtype=np.int32)
+        if isinstance(self.queue_reliability, (float, int)):
+            self.queue_reliability = self.queue_reliability * np.ones(self.c.num_ue)
 
-        # Initialize channel
-        self.channel = np.zeros((self.c.num_frames, self.c.num_ap, self.c.num_ant, self.c.num_ue,
-                                 self.c.num_slots, self.c.num_sym, self.c.num_scs), dtype=np.complex64)
 
     def update(self, frame: int | np.ndarray = 0, **kwargs):
         """Update wireless parameters with new values."""
@@ -274,11 +261,11 @@ class WirelessParams:
                 raise AttributeError(f"WirelessParams has no attribute '{key}'")
 
     def sample_lo_offset(self,
-                         model: str,  #["deterministic", "gaussian", "uniform"],
+                         model: str,  # ["deterministic", "gaussian", "uniform"],
                          ppm: float | np.ndarray | None = None,
                          t: float | None = None,
                          store: bool = True,
-                         rng: np.random.Generator | None = None) -> tuple[np.ndarray, np.ndarray]:
+                         rng: np.random.Generator = np.random.default_rng(42)) -> tuple[np.ndarray, np.ndarray]:
         """
         Compute Carrier Frequency Offset (CFO) in Hz and Clock Timing Offset (CTO) in seconds.
 
@@ -289,15 +276,13 @@ class WirelessParams:
             If `model` is "uniform", this is the range of the uniform distribution.
         :param t: Observation time in seconds (default: self.sym_time).
         :param store: If True, store the computed CFO and CTO in self.cfo_base and self.cto_base.
-        :param rng: Random number generator (default: self.c.rng).
+        :param rng: Random number generator (default: np.random.default_rng(42)).
 
         :return: Tuple of (CFO [Hz], CTO [s]).
         """
         # Checking inputs
         if t is None:
             t = self.sym_time
-        if rng is None:
-            rng = self.c.rng
         if ppm is None:
             ppm = self.lo_ppm
         # Take a positive value for ppm
@@ -331,13 +316,12 @@ class WirelessParams:
             self.cto_base = np.array(cto_s)
         return np.array(cfo_hz), np.array(cto_s)
 
-    def sample_new_data(self):
-        """Generate new data [bits] sampling from the defined distribution."""
-        return self.traffic_pdf.rvs(scale=self.avg_datasize, random_state=self.c.rng).astype(int)
+    def sample_new_data(self, rng: np.random.Generator = np.random.default_rng(42)):
+        """Generate new data [bits] sampling from the defined distribution.
 
-    def datasize_from_load(self, load_factor: float, avg_se: float) -> tuple[float, float]:
-        """Initialize the arrival rate for a given number of UEs, slots, symbols, and average data size."""
-        return arrival_rate_init(self.c.num_ue, self.c.num_slots, avg_se, self.bw, self.slot_time, load_factor)
+        :param rng: Random number generator (default: np.random.default_rng(42)).
+        """
+        return self.traffic_pdf.rvs(scale=self.traffic_avg, random_state=rng).astype(int)
 
     @property
     def ap_power_dbm(self):
@@ -363,20 +347,18 @@ class WirelessParams:
     def wavenum(self) -> float:
         return 2 * np.pi / self.wavelength
 
+
 @dataclass
 class GeometryParams:
     """Parameters related to the geometric configuration of the simulation environment.
 
+    :ivar c: SharedParams object containing common simulation parameters.
     :ivar area_coordinates: Coordinates defining the boundaries of the simulation area.
         If a np.array, it is a convex polygon with shape (A, 3) where A is the number of vertices, and each row
         represents (x, y, z) coordinates of a boundary vertex.
         If a list, it is [shell, holes] with both shell and holes being np.ndarray of vertices of size (A, 3).
-    :ivar environment_shape: Shapely polygon representing the outer boundary of the environment
-        using the x,y coordinates (first two columns of area_coordinates).
     :ivar semantic_regions: List of Shapely polygons representing semantic regions within the environment.
         Each polygon defines a distinct region with specific properties.
-    :ivar ue_location: Positions of User Equipment devices in the absolute coordinate system.
-        Shape: (U, 3) where U is the number of UEs. Each row is (x, y, z) in meters.
     :ivar ap_location: Positions of Access Points in the absolute coordinate system.
         Shape: (L, 3) where L is the number of APs. Each row is (x, y, z) in meters.
     :ivar ap_orientation: Rotation matrices for AP antenna array orientation.
@@ -387,14 +369,24 @@ class GeometryParams:
         Each element is (x, y, z) coordinates in meters.
     :ivar antenna_spacing: Uniform inter-element spacing between antennas in wavelengths.
         Applied to both horizontal and vertical dimensions. Default is λ/2.
-    :ivar ue_velocity: Current velocities of User Equipment devices.
-        Shape: (K, U, 3) where each last dimension is (vx, vy, vz) in meters/second.
+
     :ivar ue_vel_cov: Velocity covariance matrices for UEs on the ground plane.
         Shape: (U, 2, 2) where each (2, 2) matrix is the covariance for (vx, vy)
         components of velocity for each UE.
+
+    :ivar environment_shape: Shapely polygon representing the environment on the ground level. Computed internally.
+        If area_coordinates is an array, it uses area_coordinates[:2] for the outer boundary. Else, it uses
+        area_coordinates[0][:2] for the outer boundary and area_coordinates[1][:2] for the holes.
+    :ivar regions_idx: Spatial index of the regions. Computed internally.
+    :ivar ue_location: Positions of User Equipment devices in the absolute coordinate system.
+        Shape: (K, U, 3) where K is the no. of frames and U is the no. of UEs. Each row is (x, y, z) in meters.
+    :ivar ue_velocity: Current velocities of User Equipment devices.
+        Shape: (K, U, 3) where K is the no. of frames and U is the no. of UEs. Each row is (vx, vy, vz) in meters/second.
+    :ivar ue_region: Region indices of the UEs. Computed internally.
     """
     c: SharedParams
     area_coordinates: np.ndarray | list
+    environment_shape: sha.geometry.Polygon
     semantic_regions: sha.geometry.MultiPolygon | None = None
     ap_location: np.ndarray | None = None
     ap_orientation: Rotation | None = None
@@ -404,28 +396,20 @@ class GeometryParams:
     ue_vel_cov: np.ndarray | None = None
 
     # Computed attributes (excluded from __init__)
-    environment_shape: sha.geometry.Polygon = field(init=False)
+
     regions_idx: rtree.index.Index = field(init=False)
     ue_location: np.ndarray = field(init=False)
     ue_velocity: np.ndarray = field(init=False)
     ue_region: np.ndarray = field(init=False)
 
     def __post_init__(self):
-        # Build environment geometry using Shapely, checking if there are holes defined in the area coordinates
-        if isinstance(self.area_coordinates, list):
-            self.environment_shape = sha.geometry.Polygon(*self.area_coordinates)
-            self.area_coordinates = np.array(self.area_coordinates[0])
-        else:
-            self.environment_shape = sha.geometry.Polygon(self.area_coordinates)
         # For UE's location and velocity, account for different position each frame
         self.ue_location = np.zeros((self.c.num_frames + 1, self.c.num_ue, 3))
         self.ue_velocity = np.zeros((self.c.num_frames + 1, self.c.num_ue, 3))
         self.ue_region = -1 * np.ones((self.c.num_frames + 1, self.c.num_ue), dtype=np.int32)
 
         if self.semantic_regions is None:
-            self.semantic_regions = ut.split_polygon_voronoi(polygon=self.environment_shape,
-                                                             n=self.c.num_regions,
-                                                             rng=self.c.rng)
+            self.semantic_regions = ut.split_polygon_voronoi(polygon=self.environment_shape, n=self.c.num_regions)
         self.regions_idx = ut.build_spatial_index(self.semantic_regions)
 
     def update(self, frame: int | np.ndarray = 0, **kwargs):
@@ -440,7 +424,7 @@ class GeometryParams:
                 elif key in ["semantic_regions", "environment_shape"]:
                     if isinstance(value, (sha.Polygon, sha.MultiPolygon)):
                         setattr(self, key, value)
-                    else:   # If the value is a wkt, rebuild build from that
+                    else:  # If the value is a wkt, rebuild build from that
                         setattr(self, key, sha.from_wkt(value))
                     if key == "semantic_regions":
                         self.regions_idx = ut.build_spatial_index(self.semantic_regions)
@@ -468,7 +452,7 @@ class GeometryParams:
         return ut.which_region(points, self.semantic_regions, self.regions_idx)
 
     def show(self, frame: int = -1,
-             ax: plt.Axes | None = None, figsize: tuple=(6, 6), cmap_name: str = "tab20",
+             ax: plt.Axes | None = None, figsize: tuple = (6, 6), cmap_name: str = "tab20",
              ue_radius: float = 1., arrow_scale: float = 1,
              ap_width: float = 1., ap_length: float = 5.0) -> plt.Axes:
         """Plot the environment boundary and semantic regions.
@@ -507,7 +491,7 @@ class GeometryParams:
         # --- Semantic regions: filled + colored + labeled ---
         if self.semantic_regions is not None:
             regions = list(self.semantic_regions.geoms)
-            cmap = mpl.colormaps[cmap_name].resampled(max(len(regions), 1))
+            cmap = colormaps[cmap_name].resampled(max(len(regions), 1))
 
             for l, region in enumerate(regions):
                 if region.is_empty:
@@ -535,7 +519,7 @@ class GeometryParams:
             ue_xy = self.ue_location[frame][:, :2]
             ue_vel_xy = self.ue_velocity[frame][:, :2]
             for u, (pos, vel) in enumerate(zip(ue_xy, ue_vel_xy)):
-                color = ut.shade_of("blue", rng=self.c.rng)
+                color = ut.shade_of("blue", rng=np.random.default_rng(u))
                 circle = plt.Circle(pos, ue_radius, color=color, fill=True, zorder=4)
                 ax.add_patch(circle)
                 ax.text(pos[0], pos[1], f"{u}", fontsize="small", ha="center", va="bottom", zorder=6)
@@ -586,6 +570,7 @@ class GeometryParams:
     @property
     def center(self) -> np.ndarray:
         """Compute the center of the environment."""
+        # TODO: see if there is a better way to compute the center accounting for the z-axis
         return np.hstack([np.array(self.environment_shape.centroid.coords[0]).round(3), 0])
 
 
@@ -595,8 +580,15 @@ class EstimationParams:
      All estimation variables are saved, from frame = 0 to frame = self.c.num_frames - 1.
      If frame = self.c.num_frames (indexed also with [-1]), the element is the initialization variables.
 
-     :ivar c:
-     :ivar geo: GeometryParams, needed to the
+     :ivar c: SharedParams object containing common simulation parameters.
+     :ivar geo: GeometryParams, object containing geometric parameters of the simulation environment.
+     :ivar ue_pos_hat_prio: np.ndarray shape (num_frames + 1, num_ues, 3) containing the estimated position mean prior of the UEs at each frame.
+     :ivar ue_pos_hat_post: np.ndarray shape (num_frames + 1, num_ues, 3) containing the estimated position mean posterior of the UEs at each frame.
+     :ivar ue_pos_cov_prio: np.ndarray shape (num_frames + 1, num_ues, 3) containing the estimated position mean prior of the UEs at each frame.
+     :ivar ue_pos_hat_meas: np.ndarray shape (num_frames + 1, num_ues, 3) containing the estimated position mean measurement of the UEs at each frame.
+     :ivar ue_pos_cov_meas: np.ndarray shape (num_frames + 1, num_ues, 3) containing the estimated position covariance measurement of the UEs at each frame.
+     :ivar ue_pos_cov_post: np.ndarray shape (num_frames + 1, num_ues, 3) containing the estimated position covariance posterior of the UEs at each frame.
+     :ivar ue_region_hat: np.ndarray shape (num_frames + 1, num_ues) containing the estimated region index of the UEs at each frame.
     """
     c: SharedParams
     geo: GeometryParams
@@ -635,7 +627,7 @@ class EstimationParams:
                         attr[frame] = value
                     if key in ("ue_pos_hat_prio", "ue_pos_hat_post"):
                         self.ue_region_hat[frame] = self.geo.in_which_region(value)
-                        out_of_regions =  self.ue_region_hat[frame] == -1
+                        out_of_regions = self.ue_region_hat[frame] == -1
                         self.ue_region_hat[frame, out_of_regions] = self.ue_region_hat[frame - 1, out_of_regions]
                 else:
                     # If the attribute is not an array, update it directly
@@ -675,7 +667,7 @@ class EstimationParams:
                 continue  # e.g. "meas" wasn't updated for this UE at this frame
 
             # Take color
-            color = ut.shade_of("grey", rng=self.c.rng)
+            color = ut.shade_of("grey", rng=np.random.default_rng(u))
             # Add UE estimation and number
             ax.plot(mu[0], mu[1], marker="x", color=color, markersize=4, zorder=5)
             ax.text(mu[0], mu[1], f"{u}", color="gray", fontsize="x-small", ha="center", va="bottom", zorder=6)
@@ -697,8 +689,8 @@ class EstimationParams:
                 # The measured covariance are centered at the UE true location
                 mu = self.geo.ue_location[frame, u, :2]
 
-            ellipse = mpl.patches.Ellipse(xy=mu, width=width, height=height, angle=angle,
-                              edgecolor=color, facecolor="none", linewidth=1.2, zorder=4)
+            ellipse = patches.Ellipse(xy=mu, width=width, height=height, angle=angle,
+                                          edgecolor=color, facecolor="none", linewidth=1.2, zorder=4)
             ax.add_patch(ellipse)
         return ax
 
@@ -869,7 +861,7 @@ def save_params_npz(filepath: str, **dataclass_instances) -> str:
     np.savez_compressed(filepath, **flat)
     return filepath
 
-def save_radiomap(filepath: str, rm: rt.RadioMap, ap_location: np.ndarray) -> str:
+def save_radiomap(filepath: str, rm: RadioMap, ap_location: np.ndarray) -> str:
     """Extract a RadioMap's numeric data to plain NumPy arrays and save as a single .npz.
     Geometry metadata (cell_centers, cell_size) is included so the grid can be reconstructed
     for plotting/lookup later without needing the original scene or solver.

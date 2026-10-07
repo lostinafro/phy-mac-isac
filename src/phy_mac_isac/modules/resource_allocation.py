@@ -2,9 +2,9 @@ from abc import ABC, abstractmethod
 import numpy as np
 import sionna.phy as phy
 
-import utils as ut
-from params import SharedParams, WirelessParams, GeometryParams, EstimationParams
-from theory import eval_speb
+from .. import utils as ut
+from .params import SharedParams, WirelessParams, GeometryParams, EstimationParams
+from .theory import eval_speb
 
 
 class ResourceAllocationBase(ABC):

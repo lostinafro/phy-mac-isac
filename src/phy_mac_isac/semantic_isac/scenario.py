@@ -5,16 +5,16 @@ import torch
 import mitsuba as mi
 from scipy.spatial.transform import Rotation
 from matplotlib import pyplot as plt
-import utils as ut
+from . import utils as ut
 import shapely as sha
 import sionna.rt as rt
 import sionna.phy as phy
 import contextlib
-import parameters as p
-from src.modules import resource_allocation as ra
-from src.modules.transmission import TransmissionBase, TransmissionAbstraction
-from src.modules.trackers import TrackerBase, LinearKalmanTracker
-from src.modules.theory import PerformanceBase, DMimoFarFieldOMA
+from . import parameters as p
+from ..modules import resource_allocation as ra
+from ..modules.transmission import TransmissionBase, TransmissionAbstraction
+from ..modules.trackers import TrackerBase, LinearKalmanTracker
+from ..modules.theory import PerformanceBase, DMimoFarFieldOMA
 
 
 class SimulationEnvironment:

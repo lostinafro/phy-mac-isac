@@ -1,6 +1,6 @@
 import numpy as np
 from scipy.constants import speed_of_light
-from params import SharedParams, WirelessParams, GeometryParams, EstimationParams
+from .params import SharedParams, WirelessParams, GeometryParams, EstimationParams
 from abc import ABC, abstractmethod
 
 class PerformanceBase(ABC):

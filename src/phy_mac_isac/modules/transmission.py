@@ -1,8 +1,8 @@
 import sionna.phy as phy
 import numpy as np
 import torch
-import params
-from src.modules import resource_allocation as ra
+from . import params
+from . import resource_allocation as ra
 from abc import ABC, abstractmethod
 
 class TransmissionBase(ABC):

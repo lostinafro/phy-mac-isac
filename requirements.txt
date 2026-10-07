@@ -1,12 +1,2 @@
-matplotlib
-mitsuba
-numpy
-pandas
-rtree
-scipy
-Shapely
-sionna
-tqdm
-trimesh
-torch
-GPUtil
+# Install the package and its dependencies from pyproject.toml.
+-e .

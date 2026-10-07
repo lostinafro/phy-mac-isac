@@ -6,10 +6,10 @@ from concurrent.futures import ThreadPoolExecutor
 import numpy as np
 import pandas as pd
 import warnings
-from src.modules import resource_allocation as ra
-import utils as ut
-import parameters as p
-from scenario import run_episode, results_labels
+from ..modules import resource_allocation as ra
+from . import utils as ut
+from . import parameters as p
+from .scenario import run_episode, results_labels
 
 
 warnings.filterwarnings("ignore", category=RuntimeWarning)

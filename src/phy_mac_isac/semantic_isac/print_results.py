@@ -6,10 +6,10 @@ import pandas as pd
 from scipy import stats
 import matplotlib.pyplot as plt
 
-from src.modules.resource_allocation import available_methods
-import parameters as p
-from simulate_vs_ue import num_ue_vec
-from simulate_vs_regions import num_regions_vec
+from ..modules.resource_allocation import available_methods
+from . import parameters as p
+from .simulate_vs_ue import num_ue_vec
+from .simulate_vs_regions import num_regions_vec
 
 def latex_look(pl):
     # Set LaTeX as the default text interpreter
