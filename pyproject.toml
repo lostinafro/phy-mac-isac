@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "phy-mac-isac"
-version = "0.1.0"
+version = "0.0.2"
 description = "Physical and MAC layer simulation tools for integrated sensing and communications"
 readme = "README.md"
 requires-python = ">=3.10"
