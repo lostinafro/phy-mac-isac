@@ -175,13 +175,13 @@ if __name__ == "__main__":
     # Define colors and markers for each RA method
     ra_labels = sorted(list(available_methods.keys()))
     colors = dict(zip(ra_labels, ["#ff0000", "#fa8775", "#cd34b5", "#0000ff", "#ffd700", "#ffb14e"]))
-    markers = dict(zip(available_methods.keys(), ["o", "s", "D", "params", "X", "v"]))
+    markers = dict(zip(available_methods.keys(), ["o", "s", "D", "p", "X", "v"]))
 
     # Setting the results for stat and cdf computation
     metrics = ["queue", "se_achievable", "se_set", "misclassification", "risk_hat"]
 
     # Other parameters
-    data_path = os.path.join(os.path.expanduser("~"), "Nextcloud/data")
+    data_path = os.path.join(os.path.expanduser("~"), "OneDrive/data/semantic_isac/2026-09-21/")
 
     stats_list = ["mean", "90-percentile", "95-percentile", "99-percentile"]
 
