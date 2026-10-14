@@ -1,2 +1,0 @@
-# Install the package and its dependencies from pyproject.toml.
--e .
