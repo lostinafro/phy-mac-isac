@@ -1,4 +1,8 @@
 import os
+import sys
+if "--cpu" in sys.argv[1:]:
+    os.environ["CUDA_VISIBLE_DEVICES"] = ""
+
 from datetime import datetime
 import time
 import threading
@@ -9,29 +13,18 @@ import warnings
 from ..modules import resource_allocation as ra
 from .. import utils as ut
 from . import parameters as p
-from .scenario import run_episode, results_labels, load_summary_from_npz
+from .scenario import run_episode, results_labels, load_summary_from_npz, common_parser
 
 
 warnings.filterwarnings("ignore", category=RuntimeWarning)
 
- ### MAIN SIMULATION PARAMETERS ###
+### MAIN SIMULATION PARAMETERS ###
 num_ue_vec = np.array([6, 12, 18, 27, 36])
 num_episodes = p.NUM_EP
 
 
 if __name__ == "__main__":
-    ra_methods, parallel, data_folder_suffix, quiet, overwrite, concurrent, on_cpu = p.common_parser()
-    # if not on_cpu:
-    #     free_gpus = ut.select_available_gpus()
-    #     if not free_gpus:
-    #         print("No idle GPUs found -- falling back to CPU.")
-    #         on_gpu = False
-    #         os.environ["CUDA_VISIBLE_DEVICES"] = ""
-    #     else:
-    #         os.environ["CUDA_VISIBLE_DEVICES"] = ",".join(str(i) for i in free_gpus)
-    #         print(f"Using GPUs: {free_gpus}")
-    # else:
-    #     free_gpus = None
+    ra_methods, parallel, data_folder_suffix, quiet, overwrite, concurrent, episode_device = common_parser()
 
     # Test all methods if unspecified
     if ra_methods == "":
@@ -64,10 +57,10 @@ if __name__ == "__main__":
 
             ## CPU/GPU Performances
             # Setting up maximum no. of workers and GPU semaphore to avoid oversubscription of CPU/GPU memory
-            cpu_slots, gpu_slots = ut.get_processing_resources(concurrent, on_cpu, num_ue)
+            cpu_slots, gpu_slots = ut.get_processing_resources(concurrent, episode_device, num_ue)
             cpu_workers = min(cpu_slots, num_episodes)
             # Generate GPU semaphore
-            gpu_semaphore = threading.Semaphore(gpu_slots) if not on_cpu else None
+            gpu_semaphore = threading.Semaphore(gpu_slots) if gpu_slots else None
 
             # Define save folder per episode
             save_ep_dirpath = os.path.join(data_folder, prefix + f"_U{num_ue:03d}")
@@ -84,7 +77,8 @@ if __name__ == "__main__":
                         continue
                     except Exception as e:
                         print(f"\tWarning: couldn't reuse cached episode {ep} ({out_path}): {e} -- re-running it.")
-                episode_kwargs.append(dict(episode=ep, ra_method=ra_method,
+                episode_kwargs.append(dict(episode=ep,
+                                           ra_method=ra_method,
                                            env_kwargs={"num_ue": int(num_ue),
                                                        "debugging": False,
                                                        "traffic_avg": avg_datasize[m],
@@ -92,6 +86,7 @@ if __name__ == "__main__":
                                                        "ue_vel_mean": p.VEL_MAG},
                                            step_kwargs={"cfo": False},
                                            save_dirpath=save_ep_dirpath,
+                                           device=episode_device,
                                            gpu_guard=gpu_semaphore, quiet=quiet,
                                            msg=f"RA: {ra_label} - U={num_ue:02d} - Episode: {ep:02d}/{num_episodes - 1:02d}"))
 
