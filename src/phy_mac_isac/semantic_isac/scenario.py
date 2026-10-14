@@ -6,6 +6,7 @@ from matplotlib import pyplot as plt
 import contextlib
 from .. import utils as ut
 from ..modules import params
+from . import parameters as semantic_params
 from ..modules import resource_allocation as ra
 from ..modules.transmission import SEuplinkOFDMpostMRC
 from ..modules.trackers import LinearKalmanTracker
@@ -17,6 +18,13 @@ class SemanticISACScenario(SimulationEnvironment):
     """
     Configures and manages the setup of the SemanticISAC scenario.
     """
+    def __init__(self, *args, **kwargs):
+        kwargs.setdefault("rm_dirpath", semantic_params.RM_FOLDER)
+        super().__init__(*args, **kwargs)
+
+        # Specific subclass attribute
+        self.se_margin = np.ones((self.c.num_frames, self.U)) * .9
+
     def step(self, cto: bool = True, cfo: bool = True, sync: bool = False):
         """Evaluates operations in a frame"""
         ### Update frame and geometry
@@ -341,12 +349,14 @@ def run_episode(episode: int,
         # --- Build environment ---
         sha_kwargs = ut.filter_kwargs(params.SharedParams, **env_kwargs)
         wir_kwargs = ut.filter_kwargs(params.WirelessParams, **env_kwargs)
-        env = SimulationEnvironment(episode, sha_kwargs, wir_kwargs, env_dirpath=metrics_dirpath)
+        ini_kwargs = ut.filter_kwargs(SimulationEnvironment, **env_kwargs)
+        env = SemanticISACScenario(episode, sha_kwargs, wir_kwargs, env_dirpath=metrics_dirpath, **ini_kwargs)
 
-        setup_kwargs = ut.filter_kwargs(env.setup_scenario, **env_kwargs)
-        env.setup_scenario(**setup_kwargs)
+        set_kwargs = ut.filter_kwargs(env.setup_scenario, **env_kwargs)
+        env.setup_scenario(**set_kwargs)
 
         # --- Build and wire up modules ---
+        metric = semantic_params.Metrics
         ra_module = ra_method(env.c, env.wireless, env.geo, env.estimate, **ra_kwargs)
         tx_module = SEuplinkOFDMpostMRC(env.wireless, ra_module, device)
 
@@ -359,7 +369,7 @@ def run_episode(episode: int,
 
         performance = DMimoFarFieldOMA(env.c, env.wireless, env.geo, env.estimate)
 
-        env.setup_modules(ra_module, tx_module, tracker, performance)
+        env.setup_modules(metric, ra_module, tx_module, tracker, performance)
 
         # --- Run the simulation ---
         frame_iter = ut.std_progressbar(range(env.c.num_frames), desc=msg) if not quiet else range(env.c.num_frames)
@@ -393,10 +403,9 @@ results_labels = ["avg_se_achievable", "avg_se_set", "avg_queue", "avg_misclassi
 
 if __name__ == "__main__":
     num_ue = 12
-    avg_datasize, queue_max = params.arrival_rate_init(avg_se=2, num_ue=num_ue)
+    avg_datasize, queue_max = semantic_params.arrival_rate_init(avg_se=2, num_ue=num_ue)
     env_args = {"debugging": True, "num_frames": 100, "num_ue": num_ue, "traffic_avg": avg_datasize,
                 "queue_max": queue_max, "num_regions": 32, "ue_vel_mean": 5}
     step_args = {"cfo": False}
-    summary = run_episode(1, ra.RoundRobinAllocation, gpu_guard=threading.Semaphore(1), env_kwargs=env_args, step_kwargs=step_args,
-                          metrics_dirpath=os.path.join(os.getcwd(), "data_test_4"))
+    summary = run_episode(1, ra.RoundRobinAllocation, gpu_guard=threading.Semaphore(1), env_kwargs=env_args, step_kwargs=step_args)
     print(summary)
