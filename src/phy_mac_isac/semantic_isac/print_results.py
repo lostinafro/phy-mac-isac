@@ -51,7 +51,7 @@ def _load_metric_flat(datapath: str, ra_label: str, num_episodes: int, field: st
                 if field not in data:
                     print(f"Field '{field}' not found in {filepath}. Available keys: {list(data.keys())}")
                     continue
-                arr = data[field][:, :-1]   # drop the initialization frame, per original convention
+                arr = data[field][:-1]   # drop the initialization frame, per original convention
         except FileNotFoundError:
             print(f"File '{filepath}' not found.")
             continue
