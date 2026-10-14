@@ -1,4 +1,5 @@
 import os
+from copy import deepcopy
 from pathlib import Path
 import numpy as np
 from dataclasses import dataclass, field, fields, asdict, make_dataclass
@@ -16,33 +17,33 @@ from .. import utils as ut
 
 ## DEFAULT PARAMETERS
 # Scenario
-NUM_AP = 3
-NUM_ANT = 2
-NUM_UE = 18
+NUM_AP = 4
+NUM_ANT = 4
+NUM_UE = 6
 ROOM_SIDE = 200            # [m]
-VEL_MAG = 5.                 # [m/s]
-VEL_STD = 10.                 # [m/s]
-REGIONS = 16
-UE_HEIGHT = 1.5             # [m]
+VEL_STD = 1.               # [m/s]
+REGIONS = 1
+UE_HEIGHT = 1.5            # [m]
 
 # Wireless
 CARRIER = 3e9       # [Hz]
 NUMEROLOGY = 0
 NUM_SCS = 108
 NUM_SYM = 14
-NUM_SLOTS = 5 * 2 ** NUMEROLOGY
+NUM_SLOTS = 10
 NUM_FRAMES = 100
 PPM_XO = 5 / 50                # Residual PPM after initial synchronization from PRACH
-PPM_OCXO = 0.5 / 50            # Residual PPM after initial synchronization
 DATASIZE_AVG = 2048
 QUEUE_MAX = int(10 * DATASIZE_AVG)
 QUEUE_RELIABILITY = 0.95         # 1 - epsilon in the paper
-UE_POW = ut.dbm2watt(-10)
+UE_POW = ut.dbm2watt(0)
 AP_POW = ut.dbm2watt(23)
 
 # DEFAULT FOLDERS
-DATA_FOLDER = os.path.join(os.path.expanduser("~"), "OneDrive", "data")
-SCENE_FOLDER = os.environ.get("PHY_MAC_ISAC_SCENE_DIR", str(Path(__file__).resolve().parents[1] / "semantic_isac" / "scenes"))
+PACKAGE_ROOT = Path(__file__).resolve().parents[1]
+
+SCENE_FOLDER = os.environ.get("PHY_MAC_ISAC_SCENE_DIR", str(PACKAGE_ROOT / "scenes"))
+DATA_FOLDER = os.environ.get("PHY_MAC_ISAC_DATA_DIR", str(PACKAGE_ROOT / "data"))
 
 # RayTracer and RadioMap parameters
 RT_PARAM = {
@@ -106,16 +107,13 @@ class SharedParams:
     num_slots: int = NUM_SLOTS
     num_frames: int = NUM_FRAMES
     num_regions: int = REGIONS
-    rays: dict | None = None
+    rays: dict = field(default_factory=lambda: deepcopy(RT_PARAM))
     # Not used yet
     num_target: int = 0
     num_car: int = 0
 
     def __post_init__(self):
         self.num_ant = self.num_ant_h * self.num_ant_v
-
-        if self.rays is None:
-            self.rays = RT_PARAM
 
 
 @dataclass
@@ -165,7 +163,7 @@ class WirelessParams:
     traffic_avg: float | np.ndarray = DATASIZE_AVG
     traffic_pdf: stats.rv_continuous = stats.expon
     queue_max: float | np.ndarray = QUEUE_MAX
-    # Performance guarantees TODO: remove it from here, it is dependent on the scenario not the UE
+    # Performance guarantees
     queue_reliability: float | np.ndarray = QUEUE_RELIABILITY
 
     # Guard time between frames [s].
@@ -697,12 +695,39 @@ class EstimationParams:
 
 @dataclass
 class Metrics:
-    """Collect relevant metrics.
-     All metric variables are saved, from frame = 0 to frame = self.c.num_frames - 1.
-     If frame = self.c.num_frames (indexed also with [-1]), the element is the initialization variable.
+    """Collect the metrics available to a simulation.
 
-     :ivar c: SharedParams, shared parameters of the simulation.
-     :ivar
+    This base class declares metric fields without allocating their arrays.
+    Simulation-specific subclasses initialize the metrics they produce in
+    ``__post_init__``; unused fields remain ``None``. Arrays generally include
+    one entry per frame plus an entry at index ``-1`` for the initial state.
+
+    :ivar c: Shared parameters that determine simulation and array dimensions.
+    :ivar ue_slot_map: Assignment of user equipment to slots.
+    :ivar large_scale: Actual large-scale channel gain for each access point and user.
+    :ivar large_scale_hat: Estimated large-scale channel gain for each access point and user.
+    :ivar gen_bit: Number of new data bits generated for each user.
+    :ivar queue: Number of data bits waiting in each user's queue.
+    :ivar delta_queue: Remaining capacity in each user's queue.
+    :ivar sinr: Signal-to-interference-plus-noise ratio achieved by each user.
+    :ivar se_set: Spectral efficiency selected for each scheduled user.
+    :ivar se_achievable: Spectral efficiency achieved under the simulated channel.
+    :ivar se_oracle: Spectral efficiency calculated with perfect channel knowledge.
+    :ivar ber: Bit error rate measured for transmitted data.
+    :ivar latency: Time taken to deliver data.
+    :ivar packet_loss_rate: Fraction of packets that were not delivered successfully.
+    :ivar mse_position: Mean squared error of estimated user positions.
+    :ivar mse_velocity: Mean squared error of estimated user velocities.
+    :ivar detection_probability: Probability of detecting a target when one is present.
+    :ivar false_alarm_rate: Frequency of detections when no target is present.
+    :ivar range_resolution: Ability to distinguish targets separated in distance.
+    :ivar doppler_resolution: Ability to distinguish targets separated in Doppler frequency.
+    :ivar efim_oracle: Equivalent Fisher information matrix calculated with perfect knowledge.
+    :ivar efim_predicted: Equivalent Fisher information matrix predicted from available estimates.
+    :ivar misclassification: Indicator of an incorrect semantic-region classification.
+    :ivar risk_predicted: Predicted semantic risk for the selected allocation decision.
+    :ivar risk_predicted_full: Predicted semantic risk for each available allocation decision.
+    :ivar risk_hat: Semantic risk evaluated using the simulated ground truth.
      """
     c: SharedParams
 
@@ -720,16 +745,16 @@ class Metrics:
     se_set: np.ndarray = field(default=None, init=False)
     se_achievable: np.ndarray = field(default=None, init=False)
     se_oracle: np.ndarray = field(default=None, init=False)
-    # ber: np.ndarray = field(default=None, init=False)
-    # latency: np.ndarray = field(default=None, init=False)
-    # packet_loss_rate: np.ndarray  = field(default=None, init=False)
+    ber: np.ndarray = field(default=None, init=False)
+    latency: np.ndarray = field(default=None, init=False)
+    packet_loss_rate: np.ndarray  = field(default=None, init=False)
     # Localization parameters
-    # mse_position: np.ndarray = field(default=None, init=False)
-    # mse_velocity: np.ndarray = field(default=None, init=False)
-    # detection_probability: np.ndarray = field(default=None, init=False)
-    # false_alarm_rate: np.ndarray = field(default=None, init=False)
-    # range_resolution: np.ndarray = field(default=None, init=False)
-    # doppler_resolution: np.ndarray = field(default=None, init=False)
+    mse_position: np.ndarray = field(default=None, init=False)
+    mse_velocity: np.ndarray = field(default=None, init=False)
+    detection_probability: np.ndarray = field(default=None, init=False)
+    false_alarm_rate: np.ndarray = field(default=None, init=False)
+    range_resolution: np.ndarray = field(default=None, init=False)
+    doppler_resolution: np.ndarray = field(default=None, init=False)
     efim_oracle: np.ndarray = field(default=None, init=False)
     efim_predicted: np.ndarray = field(default=None, init=False)
     # Semantic parameters
@@ -739,41 +764,31 @@ class Metrics:
     risk_hat: np.ndarray = field(default=None, init=False)
 
     def __post_init__(self):
-        self.ue_slot_map = np.zeros((self.c.num_frames + 1, self.c.num_slots, self.c.num_ue), dtype=bool)
-        self.large_scale = np.zeros((self.c.num_frames + 1, self.c.num_ap, self.c.num_ue, ))
-        self.large_scale_hat = np.zeros((self.c.num_frames + 1, self.c.num_ap, self.c.num_ue))
-        self.gen_bit = np.zeros((self.c.num_frames + 1, self.c.num_ue))
-        self.queue = np.zeros((self.c.num_frames + 1, self.c.num_ue), dtype=np.int32)
-        self.delta_queue = np.zeros((self.c.num_frames + 1, self.c.num_ue), dtype=np.int32)
-        self.se_achievable = np.full((self.c.num_frames + 1, self.c.num_ue), np.nan)
-        self.se_set = np.full((self.c.num_frames + 1, self.c.num_ue), np.nan)
-        self.se_oracle = np.full((self.c.num_frames + 1, self.c.num_ue), np.nan)
-        self.sinr = np.full((self.c.num_frames + 1, self.c.num_ue), np.nan)
-        self.efim_oracle = np.zeros((self.c.num_frames + 1, self.c.num_slots, self.c.num_ue, 3, 3))
-        self.efim_predicted = np.zeros((self.c.num_frames + 1, self.c.num_slots, self.c.num_ue, 3, 3))
-        self.misclassification = np.zeros((self.c.num_frames + 1, self.c.num_ue), dtype=bool)
-        self.risk_predicted_full = np.zeros((self.c.num_frames + 1, self.c.num_ue, 2))
-        self.risk_predicted = np.zeros((self.c.num_frames + 1, self.c.num_ue))
-        self.risk_hat = np.zeros((self.c.num_frames + 1, self.c.num_ue))
+        pass
 
-    def update(self, frame: int | np.ndarray = 0, idx: np.ndarray | None = None, **kwargs):
-        """Update metrics for the selected frames with new values."""
+    def update(self,
+               frame: int | np.ndarray = 0,
+               idx: np.ndarray | None = None,
+               **kwargs):
+        """Update initialized metrics for the selected frame(s)."""
         if idx is None:
             idx = np.arange(self.c.num_ue)
+
         for key, value in kwargs.items():
-            if hasattr(self, key):
-                # Get the attribute
-                attr = getattr(self, key)
-                # If value has not the correct shape, numpy will raise IndexError
-                if key in ["se_achievable", "se_set", "se_oracle", "sinr"]:
-                    attr[frame, idx] = value
-                elif isinstance(attr, np.ndarray):
-                    attr[frame] = value
-                else:
-                    # If the attribute is not an array, update it directly
-                    setattr(self, key, value)
+            if not hasattr(self, key):
+                raise AttributeError(f"Metrics has no attribute {key!r}")
+
+            attr = getattr(self, key)
+            if attr is None:
+                raise ValueError(f"Metric {key!r} has not been initialized "
+                                 f"by {type(self).__name__}.__post_init__")
+
+            if key in {"se_achievable", "se_set", "se_oracle", "sinr"}:
+                attr[frame, idx] = value
+            elif isinstance(attr, np.ndarray):
+                attr[frame] = value
             else:
-                raise AttributeError(f"EstimateParams has no attribute '{key}'")
+                setattr(self, key, value)
 
 
 ##### Useful methods for saving/loading #####
