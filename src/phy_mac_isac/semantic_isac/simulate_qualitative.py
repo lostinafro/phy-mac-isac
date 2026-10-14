@@ -9,25 +9,10 @@ import warnings
 from ..modules import resource_allocation as ra
 from .. import utils as ut
 from . import parameters as p
-from .scenario import run_episode, results_labels
+from .scenario import run_episode, results_labels, load_summary_from_npz
 
 
 warnings.filterwarnings("ignore", category=RuntimeWarning)
-
-def load_summary_from_npz(filepath: str, results_label: list[str]) -> dict:
-    """Reconstruct a run_episode-style summary dict from an already-saved .npz,
-    for episodes being skipped because they're already done."""
-    with np.load(filepath) as data:
-        summary = {"save_path": filepath}
-        for label in results_label:
-            # Remove the avg_ from the label to catch the right field
-            field = label.replace("avg_", "", 1)
-            # Raise error if the field is not found
-            if field not in data:
-                raise KeyError(f"Field '{field}' not found in {filepath}. Available keys: {list(data.keys())}")
-            # Add the avg_ back to the label to match the original format while averaging the data
-            summary[label] = np.nanmean(data[field][:-1], axis=0)
-    return summary
 
  ### MAIN SIMULATION PARAMETERS ###
 num_ue_vec = np.arange(2, 6)
@@ -133,7 +118,7 @@ if __name__ == "__main__":
                                                        "ue_vel_mean": vel_mean[:num_ue],
                                                        "ue_vel_cov": vel_std},
                                            step_kwargs={"cfo": False},
-                                           metrics_dirpath=save_ep_dirpath,
+                                           save_dirpath=save_ep_dirpath,
                                            gpu_guard=gpu_semaphore, quiet=quiet,
                                            msg=f"RA: {ra_label} - U={num_ue:02d} - Episode: {ep:02d}/{num_episodes - 1:02d}"))
 

@@ -400,6 +400,22 @@ def run_episode(episode: int,
 results_labels = ["avg_se_achievable", "avg_se_set", "avg_queue", "avg_misclassification", "avg_risk_predicted", "avg_risk_hat"]
 
 
+def load_summary_from_npz(filepath: str, results_label: list[str]) -> dict:
+    """Reconstruct a run_episode-style summary dict from an already-saved .npz,
+    for episodes being skipped because they're already done."""
+    with np.load(filepath) as data:
+        summary = {"save_path": filepath}
+        for label in results_label:
+            # Remove the avg_ from the label to catch the right field
+            field = label.replace("avg_", "", 1)
+            # Raise error if the field is not found
+            if field not in data:
+                raise KeyError(f"Field '{field}' not found in {filepath}. Available keys: {list(data.keys())}")
+            # Add the avg_ back to the label to match the original format while averaging the data
+            summary[label] = np.nanmean(data[field][:-1], axis=0)
+    return summary
+
+
 if __name__ == "__main__":
     num_ue = 12
     avg_datasize, queue_max = semantic_params.arrival_rate_init(avg_se=2, num_ue=num_ue)

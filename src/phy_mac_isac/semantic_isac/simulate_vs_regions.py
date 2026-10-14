@@ -9,29 +9,14 @@ import warnings
 from ..modules import resource_allocation as ra
 from .. import utils as ut
 from . import parameters as p
-from .scenario import run_episode, results_labels
+from .scenario import run_episode, results_labels, load_summary_from_npz
 
 
 warnings.filterwarnings("ignore", category=RuntimeWarning)
 
-def load_summary_from_npz(filepath: str, results_label: list[str]) -> dict:
-    """Reconstruct a run_episode-style summary dict from an already-saved .npz,
-    for episodes being skipped because they're already done."""
-    with np.load(filepath) as data:
-        summary = {"save_path": filepath}
-        for label in results_label:
-            # Remove the avg_ from the label to catch the right field
-            field = label.replace("avg_", "", 1)
-            # Raise error if the field is not found
-            if field not in data:
-                raise KeyError(f"Field '{field}' not found in {filepath}. Available keys: {list(data.keys())}")
-            # Add the avg_ back to the label to match the original format while averaging the data
-            summary[label] = np.nanmean(data[field][:-1], axis=0)
-    return summary
-
 ### MAIN SIMULATION PARAMETERS ###
 num_regions_vec = np.array([2, 4, 8, 16, 32, 64])
-num_episodes = 100
+num_episodes = p.NUM_EP
 
 if __name__ == "__main__":
     ra_methods, parallel, data_folder_suffix, quiet, overwrite, concurrent, on_cpu = p.common_parser()
@@ -105,7 +90,7 @@ if __name__ == "__main__":
                                                            "traffic_avg": avg_datasize,
                                                            "queue_max": queue_max,
                                                            "ue_vel_mean": p.VEL_MAG},
-                                               metrics_dirpath=save_ep_dirpath,
+                                               save_dirpath=save_ep_dirpath,
                                                step_kwargs={"cfo": False},
                                                gpu_guard=gpu_semaphore, quiet=quiet,
                                                msg=f"RA: {ra_label} - R={num_regions:02d} - Episode: {ep:02d}/{num_episodes - 1:02d}"))
