@@ -98,7 +98,7 @@ if __name__ == "__main__":
                         print(f"\tWarning: couldn't reuse cached episode {ep} ({out_path}): {e} -- re-running it.")
                 episode_kwargs.append(dict(episode=ep, ra_method=ra_method,
                                            env_kwargs={"num_ue": int(num_ue),
-                                                       "num_slot": 1,
+                                                       "num_slots": 1,
                                                        "num_regions": len(regions),
                                                        "num_scs": 60,
                                                        "num_ap": len(ap_location),

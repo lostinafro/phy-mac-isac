@@ -972,6 +972,7 @@ def run_episode(episode: int,
             env.step(**step_kwargs)
 
         # --- Save data ---
+        save_path = None
         if save:
             ra_method_label = next(key for key, val in ra.available_methods.items() if val == ra_method)
             filename = os.path.join(save_dirpath, f"{ra_method_label}_ep{episode:04d}.npz")
