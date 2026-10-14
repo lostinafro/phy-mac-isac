@@ -110,7 +110,6 @@ class SemanticISACScenario(SimulationEnvironment):
         # Apply the allocation mask
         channel_cf *= self.ra_method.broadcast_slot_ue_mask(ue_slot_map) * self.ra_method.broadcast_ap_ue_mask()
 
-        # TODO: future should implement per-UE modulation for PHY accurate tests.
         # Perform (abstracted) usual centralized CF-mMIMO transmission
         sinr_eff, se_eff = self.transmission_module(channel_cf)
 
@@ -179,7 +178,7 @@ class SemanticISACScenario(SimulationEnvironment):
             # self.scene_fig.canvas.draw_idle()
             # plt.pause(0.001)
             try:
-                self.env_fig = self.show_estimation(frame=self.frame, fig=getattr(self, "scene_fig", None))
+                self.env_fig = self.show_estimation(frame=self.frame, fig=getattr(self, "env_fig", None))
                 self.env_fig.canvas.draw_idle()
                 plt.pause(0.001)
             except Exception as e:
@@ -287,7 +286,6 @@ class SemanticISACScenario(SimulationEnvironment):
             self.env_fig.savefig(filename, dpi=300)
 
             print("----------------------- END FRAME -------------------------\n")
-            # breakpoint()
 
         # Check feasibility of the current allocation
         if np.any(np.sum(ue_slot_map, axis=-1) > 1):
@@ -305,8 +303,8 @@ def run_episode(episode: int,
                 env_kwargs: dict | None = None,
                 step_kwargs: dict | None = None,
                 gpu_guard: threading.Semaphore | None = None,
-                save_metrics: bool = True,
-                metrics_dirpath: str = params.DATA_FOLDER,
+                save: bool = True,
+                save_dirpath: str = params.DATA_FOLDER,
                 quiet: bool = False,
                 msg: str = "") -> dict:
     """Run one full simulation episode: build the environment, wire up the modules, step
@@ -326,8 +324,8 @@ def run_episode(episode: int,
         (cto, cfo, sync).
 
     :param gpu_guard: threading.Semaphore, set to the GPU access to grant.
-    :param save_metrics: bool, if False, skip saving (useful for quick interactive runs).
-    :param metrics_dirpath: str, directory the output .npz is written to.
+    :param save: bool, if False, skip saving (useful for quick interactive runs).
+    :param save_dirpath: str, directory the output .npz is written to.
     :param quiet: bool, print a per-frame progress bar.
     :param msg: str, message to display before the progress bar.
 
@@ -350,7 +348,7 @@ def run_episode(episode: int,
         sha_kwargs = ut.filter_kwargs(params.SharedParams, **env_kwargs)
         wir_kwargs = ut.filter_kwargs(params.WirelessParams, **env_kwargs)
         ini_kwargs = ut.filter_kwargs(SimulationEnvironment, **env_kwargs)
-        env = SemanticISACScenario(episode, sha_kwargs, wir_kwargs, env_dirpath=metrics_dirpath, **ini_kwargs)
+        env = SemanticISACScenario(episode, sha_kwargs, wir_kwargs, env_dirpath=save_dirpath, **ini_kwargs)
 
         set_kwargs = ut.filter_kwargs(env.setup_scenario, **env_kwargs)
         env.setup_scenario(**set_kwargs)
@@ -377,11 +375,9 @@ def run_episode(episode: int,
             env.step(**step_kwargs)
 
         # --- Save the whole run: Estimation, and Metrics parameters ---
-        if save_metrics:
+        if save:
             ra_method_label = next(key for key, val in ra.available_methods.items() if val == ra_method)
-            filename = os.path.join(metrics_dirpath, f"{ra_method_label}_ep{episode:04d}.npz")
-            # remove channel from wireless
-            # env.wireless.channel = None
+            filename = os.path.join(save_dirpath, f"{ra_method_label}_ep{episode:04d}.npz")
             save_path = params.save_params_npz(filename, c=env.c, wireless=env.wireless, geo=env.geo,
                                           estimate=env.estimate, metrics=env.metrics)
 
