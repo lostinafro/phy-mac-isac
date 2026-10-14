@@ -138,7 +138,7 @@ class SEuplinkOFDMpostMRC(TransmissionBase):
                 block.to(self.device)
 
         # Compile the core method if possible
-        compile_mode = "reduce-overhead" if torch.cuda.is_available() else "default"
+        compile_mode = "reduce-overhead" if self.device.type == "cuda" else "default"
         self._compiled_core = torch.compile(self._core, mode=compile_mode)
 
     def _core(self, h: torch.Tensor, tx_power: torch.Tensor, no: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
