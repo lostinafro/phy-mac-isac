@@ -6,3 +6,4 @@ dist/
 *.egg-info/
 .pytest_cache/
 .idea/
+/src/phy_mac_isac/data/
