@@ -46,4 +46,5 @@ where = ["src"]
 include = ["phy_mac_isac*"]
 
 [tool.setuptools.package-data]
-"phy_mac_isac.semantic_isac" = ["scenes/meshes/*.ply", "scenes/rm/*.npz"]
+"phy_mac_isac" = ["scenes/meshes/*.ply"]
+"phy_mac_isac.semantic_isac" = ["rm/*.npz"]
