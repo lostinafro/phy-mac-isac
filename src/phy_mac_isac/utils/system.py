@@ -48,30 +48,43 @@ def fixed_progressbar(total_iteration, **kwargs):
 
 ## Hardware resources
 def get_processing_resources(num_scripts: int,
-                             on_cpu: bool, num_ue: int = 1, mib_vram_per_ue: int | float = 200,
-                             mib_vram_baseline: int = 210,
-                             usable_gpu_ids: list[int] | None = None):
-    # TODO: the amount of GPU VRAM (in MiB) required per episode instead of per UE
-    """Estimate the number of CPU workers, threads per worker, and GPU semaphore value based on the number of scripts,
-    episodes, and GPU availability.
-    It considers a mib_vram_per_ue = 200 if not specified otherwise.
+                             device: str,
+                             num_ue: int = 1,
+                             mib_vram_per_ue: int | float = 200,
+                             mib_vram_baseline: int | float = 210) -> tuple[int, int]:
+    """Return CPU workers and GPU episode slots for the selected device.
 
-    :param num_scripts: Number of scripts to run simultaneously.
-    :param on_cpu: Whether to use GPU or not.
-    :param num_ue: Number of UE instances to simulate.
-    :param mib_vram_per_ue: Amount of VRAM (in MiB) required per episode to run on GPU.
-    :param mib_vram_baseline: Amount of VRAM (in MiB) required for initialization processes.
+    ``device`` is the logical Torch device, such as "cpu" or "cuda:0".
+    GPU slots are calculated from free memory on that device only.
+    ``num_scripts`` reserves an equal share for simultaneously running scripts.
     """
+    # TODO: the amount of GPU VRAM (in MiB) required per episode instead of per UE
+    if num_scripts < 1:
+        raise ValueError("num_scripts must be at least 1")
+    if num_ue < 0:
+        raise ValueError("num_ue cannot be negative")
 
-    cpu_slots = int(max(1, (os.cpu_count() // 2)  // num_scripts))
-    if not on_cpu:
-        gpus = [g for g in GPUtil.getGPUs() if usable_gpu_ids is None or g.id in usable_gpu_ids]
-        free_vram_mib = int(np.sum([gpu.memoryFree for gpu in gpus]))
-        vram_per_episode = mib_vram_baseline + mib_vram_per_ue * num_ue
-        gpu_slots = int(max(1, free_vram_mib / vram_per_episode / num_scripts))
-    else:
-        gpu_slots = 0
+    available_cpus = os.cpu_count() or 1
+    cpu_slots = max(1, (available_cpus // 2) // num_scripts)
 
+    # Do not query or initialize CUDA for a CPU run.
+    if not str(device).startswith("cuda"):
+        return cpu_slots, 0
+
+    import torch
+
+    selected_device = torch.device(device)
+    if not torch.cuda.is_available():
+        raise RuntimeError(f"CUDA was requested ({device}), but is unavailable")
+
+    vram_per_episode_mib = mib_vram_baseline + mib_vram_per_ue * num_ue
+    if vram_per_episode_mib <= 0:
+        raise ValueError("Estimated VRAM per episode must be positive")
+
+    free_bytes, _total_bytes = torch.cuda.mem_get_info(selected_device)
+    free_mib = free_bytes / (1024 ** 2)
+
+    gpu_slots = max(0, int(free_mib // (num_scripts * vram_per_episode_mib)))
     return cpu_slots, gpu_slots
 
 
