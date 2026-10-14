@@ -1,7 +1,5 @@
-import os
 from copy import deepcopy
 from pathlib import Path
-from argparse import ArgumentParser
 import numpy as np
 from dataclasses import dataclass, field
 
@@ -50,22 +48,6 @@ RT_PARAM = {
     "cell_size": (.5, .5),
 }
 
-
-def common_parser():
-    # TODO: to be moved on the run_episode script. Try to properly setting when asking for cpu
-    parser = ArgumentParser(description="Common parser to run simulations.")
-
-    parser.add_argument("--ra_method", type=str, default="", help="Method to use for RA simulation")
-    parser.add_argument('--parallel', action='store_true', help="Enable parallel processing")
-    parser.add_argument('--savesubdir', type=str, default="", help="Optional name of the subdirectory to save results in")
-    parser.add_argument('--quiet', action='store_true', help="Quiet outputs")
-    parser.add_argument("--overwrite", action='store_true', help="Overwrite results  if already present in the savesubdir")
-    parser.add_argument("--concurrent", type=int, default=1, help="Set the number of concurrent scripts run")
-    parser.add_argument("--cpu", action='store_true', help="Set the processing on the CPU only")
-
-    args = parser.parse_args()
-
-    return args.ra_method, args.parallel, args.savesubdir, args.quiet, args.overwrite, args.concurrent, args.cpu
 
 ## CLASSES
 @dataclass
