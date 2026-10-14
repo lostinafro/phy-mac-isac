@@ -1,7 +1,7 @@
 import numpy as np
 from scipy.constants import speed_of_light
 from .params import SharedParams, WirelessParams, GeometryParams, EstimationParams
-from abc import ABC, abstractmethod
+from abc import ABC
 
 class PerformanceBase(ABC):
     """Generic class for theoretical performance calculations"""
@@ -18,11 +18,9 @@ class PerformanceBase(ABC):
         self.geo = geo
         self.estimate = estimate
 
-    @abstractmethod
     def eval_efim(self, *args, **kwargs) -> np.ndarray:
         raise NotImplementedError
 
-    @abstractmethod
     def eval_achievable_se(self, *args, **kwargs) -> np.ndarray:
         raise NotImplementedError
 

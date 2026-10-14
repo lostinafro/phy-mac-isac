@@ -3,7 +3,7 @@ import numpy as np
 import torch
 from . import params
 from . import resource_allocation as ra
-from abc import ABC, abstractmethod
+from abc import ABC
 
 class TransmissionBase(ABC):
     """Abstract base class for a physical-layer transmission scheme -- something that takes a
@@ -22,7 +22,6 @@ class TransmissionBase(ABC):
         self.ra_module = ra_module
         self.device = device
 
-    @abstractmethod
     def __call__(self, channel: np.ndarray, tx_power: np.ndarray | float | None = None,
                  no: float | None = None, **kwargs) -> tuple:
         """Run one transmission over `channel` using `resource_grid`/`stream_management`.
@@ -31,6 +30,7 @@ class TransmissionBase(ABC):
         """
         raise NotImplementedError
 
+# TODO: future should implement per-UE modulation below for PHY accurate tests.
 class TransmissionCFR(TransmissionBase):
     """Simulates one uplink OFDM transmission entirely in the frequency domain using
     sionna.phy blocks: bits -> LDPC encode -> QAM map -> resource grid -> apply CFR channel

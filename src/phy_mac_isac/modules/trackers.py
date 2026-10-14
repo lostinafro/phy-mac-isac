@@ -1,5 +1,5 @@
 import numpy as np
-from abc import ABC, abstractmethod
+from abc import ABC
 
 class TrackerBase(ABC):
     """Abstract base class for a recursive Bayesian tracker (Kalman-family filters and similar)
@@ -9,8 +9,9 @@ class TrackerBase(ABC):
     `step` is provided here as a concrete method: it's pure composition of the two abstract
     steps and is identical across every subclass, so it doesn't belong in each of them.
     """
+    def __init__(self):
+        pass
 
-    @abstractmethod
     def prior(self, x: np.ndarray, P: np.ndarray, u: np.ndarray | None = None) -> tuple:
         """Predict step.
 
@@ -18,7 +19,6 @@ class TrackerBase(ABC):
         """
         raise NotImplementedError
 
-    @abstractmethod
     def posterior(self, obs: np.ndarray, x_pri: np.ndarray, P_pri: np.ndarray, obs_idx: np.ndarray | None = None,
                   obs_cov: np.ndarray | None = None) -> tuple:
         """Update step.
