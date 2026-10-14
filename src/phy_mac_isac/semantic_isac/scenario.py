@@ -4,6 +4,8 @@ import numpy as np
 import torch
 from matplotlib import pyplot as plt
 import contextlib
+from argparse import ArgumentParser
+from sionna.phy import config as sionna_config
 from .. import utils as ut
 from ..modules import params
 from . import parameters as semantic_params
@@ -306,6 +308,7 @@ def run_episode(episode: int,
                 ra_kwargs: dict | None = None,
                 env_kwargs: dict | None = None,
                 step_kwargs: dict | None = None,
+                device: str | torch.device | None = None,
                 gpu_guard: threading.Semaphore | None = None,
                 save: bool = True,
                 save_dirpath: str = params.DATA_FOLDER,
@@ -327,6 +330,7 @@ def run_episode(episode: int,
     :param step_kwargs: dict | None, kwargs forwarded to every `env.step(...)` call
         (cto, cfo, sync).
 
+    :param device: str | torch.device, the device to use for Sionna computations.
     :param gpu_guard: threading.Semaphore, set to the GPU access to grant.
     :param save: bool, if False, skip saving (useful for quick interactive runs).
     :param save_dirpath: str, directory the output .npz is written to.
@@ -338,9 +342,15 @@ def run_episode(episode: int,
         script to aggregate across episodes without re-reading every .npz.
     """
     ### Set up machine variables
-    on_gpu = (gpu_guard is not None) and torch.cuda.is_available()
-    guard = gpu_guard if on_gpu else contextlib.nullcontext()
-    device = torch.device("cuda") if on_gpu else torch.device("cpu")
+    if device is None:
+        device = "cuda:0" if gpu_guard is not None and torch.cuda.is_available() else "cpu"
+
+    device = torch.device(device)
+
+    if device.type == "cuda" and not torch.cuda.is_available():
+        raise RuntimeError("A CUDA device was requested, but CUDA is unavailable")
+
+    guard = gpu_guard if device.type == "cuda" and gpu_guard is not None else contextlib.nullcontext()
 
     # Take the kwargs
     ra_kwargs = ra_kwargs or {}
@@ -414,6 +424,28 @@ def load_summary_from_npz(filepath: str, results_label: list[str]) -> dict:
             # Add the avg_ back to the label to match the original format while averaging the data
             summary[label] = np.nanmean(data[field][:-1], axis=0)
     return summary
+
+
+def common_parser():
+    parser = ArgumentParser(description="Common parser to run simulations.")
+
+    parser.add_argument("--ra_method", type=str, default="", help="Method to use for RA simulation")
+    parser.add_argument('--parallel', action='store_true', help="Enable parallel processing")
+    parser.add_argument('--savesubdir', type=str, default="", help="Optional name of the subdirectory to save results in")
+    parser.add_argument('--quiet', action='store_true', help="Quiet outputs")
+    parser.add_argument("--overwrite", action='store_true', help="Overwrite results  if already present in the savesubdir")
+    parser.add_argument("--concurrent", type=int, default=1, help="Set the number of concurrent scripts run")
+    parser.add_argument("--cpu", action='store_true', help="Set the processing on the CPU only")
+
+    args = parser.parse_args()
+    if args.cpu:
+        sionna_config.device = "cpu"
+        device = "cpu"
+    else:
+        sionna_config.device = "cuda:0"
+        device = "cuda:0"
+
+    return args.ra_method, args.parallel, args.savesubdir, args.quiet, args.overwrite, args.concurrent, device
 
 
 if __name__ == "__main__":
