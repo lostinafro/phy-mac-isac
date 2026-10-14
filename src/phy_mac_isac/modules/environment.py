@@ -22,6 +22,12 @@ class SimulationEnvironment:
     """
     Base class configuring and managing the setup for a dynamic scenario in a wireless communication simulation.
     """
+    shared_type = params.SharedParams
+    wireless_type = params.WirelessParams
+    geometry_type = params.GeometryParams
+    estimation_type = params.EstimationParams
+    metrics_type = params.Metrics
+
     def __init__(self, episode : int,
                  shared_params : dict,
                  wireless_params : dict,
@@ -79,11 +85,11 @@ class SimulationEnvironment:
         self.rm_folder = rm_dirpath or os.path.join(self.env_folder, "rm")
 
         # SHARED PARAMETERS
-        self.c = params.SharedParams(**shared_params)       # Parameters collecting shared variables
+        self.c = self.shared_type(**shared_params)       # Parameters collecting shared variables
 
         # WIRELESS attributes
         # Compute wireless parameters from numerology, carrier, lo_ppm, and the other in the dataclass
-        self.wireless = params.WirelessParams(**wireless_params, c=self.c)  # Parameters collecting wireless variables
+        self.wireless = self.wireless_type(**wireless_params, c=self.c)  # Parameters collecting wireless variables
 
         # GEOMETRY and SCENE
         self._load_scene = load_scene
@@ -104,10 +110,10 @@ class SimulationEnvironment:
             semantic_regions = sha.MultiPolygon([sha.Polygon(boundaries[i]) for i in range(self.c.num_regions)])
 
         # Initialize geometrical shape
-        self.geo = params.GeometryParams(c=self.c,
-                                         area_coordinates=area_coordinates,
-                                         environment_shape=env_polygon,
-                                         semantic_regions=semantic_regions)  # Parameters collecting geometric variables
+        self.geo = self.geometry_type(c=self.c,
+                                      area_coordinates=area_coordinates,
+                                      environment_shape=env_polygon,
+                                      semantic_regions=semantic_regions)  # Parameters collecting geometric variables
 
         # Initialize default camera for the scene (if present)
         if self._load_scene:
@@ -116,10 +122,10 @@ class SimulationEnvironment:
             self.default_camera = rt.Camera(position=mi.Point3f(self.geo.center + extent), look_at=mi.Point3f(self.geo.center))
 
         # Initialize estimation parameters
-        self.estimate = params.EstimationParams(c=self.c, geo=self.geo)   # Parameters collecting estimation variables
+        self.estimate = self.estimation_type(c=self.c, geo=self.geo)   # Parameters collecting estimation variables
 
         # Initialize metrics attribute (setup in setup_modules)
-        self.metrics = None      # Metrics to be saved for performance evaluation
+        self.metrics = self.metrics_type(c=self.c)   # Metrics to be saved for performance evaluation
 
         # Load already generated environment eventually,
         # i.e., reload anything random (position, velocities, data) in each frame without recompute them.
@@ -163,13 +169,11 @@ class SimulationEnvironment:
         self.frame_sync = 0         # Denote the last frame in which PRACH synchronization was performed
 
     def setup_modules(self,
-                      metrics: type[params.Metrics],
                       ra_algorithm: type[ra.ResourceAllocationBase],
                       transmission_module: type[TransmissionBase],
                       tracker_module: type[TrackerBase],
                       performance: type[PerformanceBase]):
         """Set scheduling, transmission, tracking, and evaluation modules to be used."""
-        self.metrics = metrics(c=self.c)
         self.ra_method = ra_algorithm
         self.transmission_module = transmission_module
         self.tracker_module = tracker_module
@@ -955,13 +959,12 @@ def run_episode(episode: int,
         env.setup_scenario(**set_kwargs)
 
         # --- Build and wire up modules ---
-        metric = params.Metrics
         ra_module = ra_method(env.c, env.wireless, env.geo, env.estimate, **ra_kwargs)
         tx_module = TransmissionBase(env.wireless, ra_module, device)
         tracker = TrackerBase()
         performance = PerformanceBase(env.c, env.wireless, env.geo, env.estimate)
         # Connect modules to the environment
-        env.setup_modules(metric, ra_module, tx_module, tracker, performance)
+        env.setup_modules(ra_module, tx_module, tracker, performance)
 
         # --- Run the simulation ---
         frame_iter = ut.std_progressbar(range(env.c.num_frames), desc=msg) if not quiet else range(env.c.num_frames)

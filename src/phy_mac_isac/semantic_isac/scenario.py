@@ -18,6 +18,10 @@ class SemanticISACScenario(SimulationEnvironment):
     """
     Configures and manages the setup of the SemanticISAC scenario.
     """
+    shared_type = semantic_params.SharedParams
+    wireless_type = semantic_params.WirelessParams
+    metrics_type = semantic_params.Metrics
+
     def __init__(self, *args, **kwargs):
         kwargs.setdefault("rm_dirpath", semantic_params.RM_FOLDER)
         super().__init__(*args, **kwargs)
@@ -354,7 +358,6 @@ def run_episode(episode: int,
         env.setup_scenario(**set_kwargs)
 
         # --- Build and wire up modules ---
-        metric = semantic_params.Metrics
         ra_module = ra_method(env.c, env.wireless, env.geo, env.estimate, **ra_kwargs)
         tx_module = SEuplinkOFDMpostMRC(env.wireless, ra_module, device)
 
@@ -367,7 +370,7 @@ def run_episode(episode: int,
 
         performance = DMimoFarFieldOMA(env.c, env.wireless, env.geo, env.estimate)
 
-        env.setup_modules(metric, ra_module, tx_module, tracker, performance)
+        env.setup_modules(ra_module, tx_module, tracker, performance)
 
         # --- Run the simulation ---
         frame_iter = ut.std_progressbar(range(env.c.num_frames), desc=msg) if not quiet else range(env.c.num_frames)

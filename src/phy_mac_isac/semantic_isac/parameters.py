@@ -12,6 +12,7 @@ from ..modules.params import WirelessParams as BaseWireless
 from ..modules.params import Metrics as BaseMetrics
 
 ## DEFAULT PARAMETERS
+NUM_EP = int(1e3)
 # Scenario
 NUM_AP = 3
 NUM_ANT = 2
