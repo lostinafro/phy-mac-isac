@@ -1,19 +1,12 @@
 import os
-import sys
-if "--cpu" in sys.argv[1:]:
-    os.environ["CUDA_VISIBLE_DEVICES"] = ""
-
 from datetime import datetime
 import time
-import threading
-from concurrent.futures import ThreadPoolExecutor
 import numpy as np
 import pandas as pd
 import warnings
-from sionna.phy import config as sionna_config
 from ..modules import resource_allocation as ra
-from .. import utils as ut
-from . import parameters as p
+from ..utils import check_data, get_processing_resources, run_simulations
+from . import parameters as semantic_params
 from .scenario import run_episode, results_labels, load_summary_from_npz, common_parser
 
 
@@ -35,11 +28,11 @@ if __name__ == "__main__":
 
     # Data folder for today
     today = datetime.now().strftime("%Y-%m-%d")
-    data_folder = os.path.join(p.DATA_FOLDER, today, data_folder_suffix)
+    data_folder = os.path.join(semantic_params.DATA_FOLDER, today, data_folder_suffix)
 
     # Compute datasize and queue_max
     # Check maximum load for non-trivial/non_explosive queues
-    avg_datasize, queue_max = p.arrival_rate_init(avg_se=2, num_ue=num_ue_vec)
+    avg_datasize, queue_max = semantic_params.arrival_rate_init(avg_se=2, num_ue=num_ue_vec)
     scale = 3
 
     # Set the area and the regions
@@ -54,8 +47,8 @@ if __name__ == "__main__":
     # Set initial ue_pos and velocity mean directions
     xy_init_pos = scale * np.array([[-22, -5], [-40, 33], [48, -19], [3.5, -22.5], [30, -4]], dtype=np.float64)
     ue_init_pos = np.hstack((xy_init_pos, 1.5*np.ones((xy_init_pos.shape[0], 1))))
-    vel_mean = p.VEL_MAG * np.array([[0, 1, 0], [0, -1.5, 0], [0.03, 0.9, 0], [0, 0, 0], [1, 0, 0]])
-    vel_std = p.VEL_STD
+    vel_mean = semantic_params.VEL_MAG * np.array([[0, 1, 0], [0, -1.5, 0], [0.03, 0.9, 0], [0, 0, 0], [1, 0, 0]])
+    vel_std = semantic_params.VEL_STD
 
     ap_location = scale * np.array([[60, -60., 10], [20, 50., 10], [-50, -20, 10]], dtype=np.float64)
 
@@ -67,7 +60,7 @@ if __name__ == "__main__":
         # Saving parameters
         prefix = ra_label + "_qualitative"
         data_shape = (len(num_ue_vec), len(results_labels))
-        avg_results, filename = ut.check_data(data_shape, prefix, data_folder, overwrite_flag=overwrite)
+        avg_results, filename = check_data(data_shape, prefix, data_folder, overwrite_flag=overwrite)
 
         # Start processing
         for m, num_ue in enumerate(num_ue_vec):
@@ -76,10 +69,8 @@ if __name__ == "__main__":
 
             ## CPU/GPU Performances
             # Setting up maximum no. of workers and GPU semaphore to avoid oversubscription of CPU/GPU memory
-            cpu_slots, gpu_slots = ut.get_processing_resources(concurrent, episode_device, num_ue)
-            cpu_workers = min(cpu_slots, num_episodes)
-            # Generate GPU semaphore
-            gpu_semaphore = threading.Semaphore(gpu_slots) if gpu_slots else None
+            cpu_slots, gpu_slots = get_processing_resources(concurrent, episode_device, num_ue)
+            max_workers = min(cpu_slots, gpu_slots) if gpu_slots else cpu_slots
 
             # Define save folder per episode
             save_ep_dirpath = os.path.join(data_folder, prefix + f"_U{num_ue:03d}")
@@ -114,7 +105,7 @@ if __name__ == "__main__":
                                            step_kwargs={"cfo": False},
                                            save_dirpath=save_ep_dirpath,
                                            device=episode_device,
-                                           gpu_guard=gpu_semaphore, quiet=quiet,
+                                           quiet=quiet,
                                            msg=f"RA: {ra_label} - U={num_ue:02d} - Episode: {ep:02d}/{num_episodes - 1:02d}"))
 
             print(f"{len(results)} episodes already done, {len(episode_kwargs)} remaining.")
@@ -124,16 +115,22 @@ if __name__ == "__main__":
 
             # Start simulation on the missing episodes
             start_time = time.time()
-            if episode_kwargs:
-                if parallel:
-                    import torch
-                    torch.set_num_threads(cpu_slots)
-                    with ThreadPoolExecutor(max_workers=cpu_workers) as executor:
-                        futures = [executor.submit(run_episode, **kw) for kw in episode_kwargs]
-                        results.extend(f.result() for f in futures)
-                else:
-                    for ep_kw in episode_kwargs:
-                        results.append(run_episode(**ep_kw))
+            results.extend(run_simulations(run_episode,
+                                           episode_kwargs,
+                                           device=episode_device,
+                                           parallel=parallel,
+                                           max_workers=max_workers,
+                                           torch_threads=1))
+            # if episode_kwargs:
+            #     if parallel:
+            #         import torch
+            #         torch.set_num_threads(cpu_slots)
+            #         with ThreadPoolExecutor(max_workers=cpu_workers) as executor:
+            #             futures = [executor.submit(run_episode, **kw) for kw in episode_kwargs]
+            #             results.extend(f.result() for f in futures)
+            #     else:
+            #         for ep_kw in episode_kwargs:
+            #             results.append(run_episode(**ep_kw))
 
             # Average the scalar summaries across episodes
             avg_results[m] = np.nanmean(np.array([[r[label] for label in results_labels] for r in results]), axis=(0, -1))
