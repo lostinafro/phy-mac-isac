@@ -51,14 +51,14 @@ def get_processing_resources(num_scripts: int,
                              device: str,
                              num_ue: int = 1,
                              mib_vram_per_ue: int | float = 200,
-                             mib_vram_baseline: int | float = 210) -> tuple[int, int]:
+                             mib_vram_baseline: int | float = 210,
+                             measured_episode_mib: int | float | None = None,) -> tuple[int, int | None]:
     """Return CPU workers and GPU episode slots for the selected device.
 
     ``device`` is the logical Torch device, such as "cpu" or "cuda:0".
     GPU slots are calculated from free memory on that device only.
     ``num_scripts`` reserves an equal share for simultaneously running scripts.
     """
-    # TODO: the amount of GPU VRAM (in MiB) required per episode instead of per UE
     if num_scripts < 1:
         raise ValueError("num_scripts must be at least 1")
     if num_ue < 0:
@@ -69,7 +69,7 @@ def get_processing_resources(num_scripts: int,
 
     # Do not query or initialize CUDA for a CPU run.
     if not str(device).startswith("cuda"):
-        return cpu_slots, 0
+        return cpu_slots, None
 
     import torch
 
@@ -77,7 +77,11 @@ def get_processing_resources(num_scripts: int,
     if not torch.cuda.is_available():
         raise RuntimeError(f"CUDA was requested ({device}), but is unavailable")
 
-    vram_per_episode_mib = mib_vram_baseline + mib_vram_per_ue * num_ue
+    # Compute VRAM per episode.
+    if measured_episode_mib is not None:
+        vram_per_episode_mib = measured_episode_mib
+    else:
+        vram_per_episode_mib = mib_vram_baseline + mib_vram_per_ue * num_ue
     if vram_per_episode_mib <= 0:
         raise ValueError("Estimated VRAM per episode must be positive")
 
@@ -85,6 +89,8 @@ def get_processing_resources(num_scripts: int,
     free_mib = free_bytes / (1024 ** 2)
 
     gpu_slots = max(0, int(free_mib // (num_scripts * vram_per_episode_mib)))
+    if gpu_slots < 1:
+        raise RuntimeError(f"Insufficient free VRAM on {device} for one simulation episode")
     return cpu_slots, gpu_slots
 
 
