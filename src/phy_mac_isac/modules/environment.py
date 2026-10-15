@@ -907,7 +907,7 @@ def run_episode(episode: int,
                 ra_kwargs: dict | None = None,
                 env_kwargs: dict | None = None,
                 step_kwargs: dict | None = None,
-                gpu_guard: threading.Semaphore | None = None,
+                device: str | torch.device | None = None,
                 save: bool = True,
                 save_dirpath: str = params.DATA_FOLDER,
                 quiet: bool = False,
@@ -928,7 +928,7 @@ def run_episode(episode: int,
     :param step_kwargs: dict | None, kwargs forwarded to every `env.step(...)` call
         (cto, cfo, sync).
 
-    :param gpu_guard: threading.Semaphore, set to the GPU access to grant.
+    :param device: str | torch.device, the device to use for Sionna computations.
     :param save: bool, if False, skip saving (useful for quick interactive runs).
     :param save_dirpath: str, directory the output .npz is written to.
     :param quiet: bool, print a per-frame progress bar.
@@ -939,50 +939,53 @@ def run_episode(episode: int,
         script to aggregate across episodes without re-reading every .npz.
     """
     ### Set up machine variables
-    on_gpu = (gpu_guard is not None) and torch.cuda.is_available()
-    guard = gpu_guard if on_gpu else contextlib.nullcontext()
-    device = torch.device("cuda") if on_gpu else torch.device("cpu")
+    if device is None:
+        device = "cpu"
+
+    device = torch.device(device)
+
+    if device.type == "cuda" and not torch.cuda.is_available():
+        raise RuntimeError(f"CUDA was requested ({device}), but CUDA is unavailable")
 
     # Take the kwargs
     ra_kwargs = ra_kwargs or {}
     env_kwargs = env_kwargs or {}
     step_kwargs = step_kwargs or {}
 
-    with guard:
-        # --- Build environment ---
-        sha_kwargs = ut.filter_kwargs(params.SharedParams, **env_kwargs)
-        wir_kwargs = ut.filter_kwargs(params.WirelessParams, **env_kwargs)
-        ini_kwargs = ut.filter_kwargs(SimulationEnvironment, **env_kwargs)
-        env = SimulationEnvironment(episode, sha_kwargs, wir_kwargs, env_dirpath=save_dirpath, **ini_kwargs)
+    # --- Build environment ---
+    sha_kwargs = ut.filter_kwargs(params.SharedParams, **env_kwargs)
+    wir_kwargs = ut.filter_kwargs(params.WirelessParams, **env_kwargs)
+    ini_kwargs = ut.filter_kwargs(SimulationEnvironment, **env_kwargs)
+    env = SimulationEnvironment(episode, sha_kwargs, wir_kwargs, env_dirpath=save_dirpath, **ini_kwargs)
 
-        set_kwargs = ut.filter_kwargs(env.setup_scenario, **env_kwargs)
-        env.setup_scenario(**set_kwargs)
+    set_kwargs = ut.filter_kwargs(env.setup_scenario, **env_kwargs)
+    env.setup_scenario(**set_kwargs)
 
-        # --- Build and wire up modules ---
-        ra_module = ra_method(env.c, env.wireless, env.geo, env.estimate, **ra_kwargs)
-        tx_module = TransmissionBase(env.wireless, ra_module, device)
-        tracker = TrackerBase()
-        performance = PerformanceBase(env.c, env.wireless, env.geo, env.estimate)
-        # Connect modules to the environment
-        env.setup_modules(ra_module, tx_module, tracker, performance)
+    # --- Build and wire up modules ---
+    ra_module = ra_method(env.c, env.wireless, env.geo, env.estimate, **ra_kwargs)
+    tx_module = TransmissionBase(env.wireless, ra_module, device)
+    tracker = TrackerBase()
+    performance = PerformanceBase(env.c, env.wireless, env.geo, env.estimate)
+    # Connect modules to the environment
+    env.setup_modules(ra_module, tx_module, tracker, performance)
 
-        # --- Run the simulation ---
-        frame_iter = ut.std_progressbar(range(env.c.num_frames), desc=msg) if not quiet else range(env.c.num_frames)
-        for _ in frame_iter:
-            env.step(**step_kwargs)
+    # --- Run the simulation ---
+    frame_iter = ut.std_progressbar(range(env.c.num_frames), desc=msg) if not quiet else range(env.c.num_frames)
+    for _ in frame_iter:
+        env.step(**step_kwargs)
 
-        # --- Save data ---
-        save_path = None
-        if save:
-            ra_method_label = next(key for key, val in ra.available_methods.items() if val == ra_method)
-            filename = os.path.join(save_dirpath, f"{ra_method_label}_ep{episode:04d}.npz")
-            save_path = params.save_params_npz(filename, c=env.c, wireless=env.wireless, geo=env.geo,
-                                               estimate=env.estimate)
+    # --- Save data ---
+    save_path = None
+    if save:
+        ra_method_label = next(key for key, val in ra.available_methods.items() if val == ra_method)
+        filename = os.path.join(save_dirpath, f"{ra_method_label}_ep{episode:04d}.npz")
+        save_path = params.save_params_npz(filename, c=env.c, wireless=env.wireless, geo=env.geo,
+                                           estimate=env.estimate)
 
-        # --- Small scalar summary for quick cross-episode aggregation ---
-        summary = {"save_path": save_path,
-                   "status": "success"}
-        return summary
+    # --- Small scalar summary for quick cross-episode aggregation ---
+    summary = {"save_path": save_path,
+               "status": "success"}
+    return summary
 
 
 results_labels = ["avg_se_achievable", "avg_se_set", "avg_queue", "avg_misclassification", "avg_risk_predicted", "avg_risk_hat"]
@@ -994,5 +997,5 @@ if __name__ == "__main__":
     env_args = {"debugging": True, "num_frames": 50, "num_ue": num_ue, "traffic_avg": avg_datasize,
                 "queue_max": queue_max, "num_regions": 32, "ue_vel_mean": 5}
     step_args = {"cfo": False}
-    res = run_episode(1, ra.RoundRobinAllocation, gpu_guard=threading.Semaphore(1), env_kwargs=env_args, step_kwargs=step_args)
+    res = run_episode(1, ra.RoundRobinAllocation, env_kwargs=env_args, step_kwargs=step_args)
     print(res)

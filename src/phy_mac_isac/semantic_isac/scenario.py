@@ -3,7 +3,6 @@ import os
 import numpy as np
 import torch
 from matplotlib import pyplot as plt
-import contextlib
 from argparse import ArgumentParser
 from sionna.phy import config as sionna_config
 from .. import utils as ut
@@ -309,7 +308,6 @@ def run_episode(episode: int,
                 env_kwargs: dict | None = None,
                 step_kwargs: dict | None = None,
                 device: str | torch.device | None = None,
-                gpu_guard: threading.Semaphore | None = None,
                 save: bool = True,
                 save_dirpath: str = params.DATA_FOLDER,
                 quiet: bool = False,
@@ -331,7 +329,6 @@ def run_episode(episode: int,
         (cto, cfo, sync).
 
     :param device: str | torch.device, the device to use for Sionna computations.
-    :param gpu_guard: threading.Semaphore, set to the GPU access to grant.
     :param save: bool, if False, skip saving (useful for quick interactive runs).
     :param save_dirpath: str, directory the output .npz is written to.
     :param quiet: bool, print a per-frame progress bar.
@@ -343,69 +340,66 @@ def run_episode(episode: int,
     """
     ### Set up machine variables
     if device is None:
-        device = "cuda:0" if gpu_guard is not None and torch.cuda.is_available() else "cpu"
+        device = "cpu"
 
     device = torch.device(device)
 
     if device.type == "cuda" and not torch.cuda.is_available():
-        raise RuntimeError("A CUDA device was requested, but CUDA is unavailable")
-
-    guard = gpu_guard if device.type == "cuda" and gpu_guard is not None else contextlib.nullcontext()
+        raise RuntimeError(f"CUDA was requested ({device}), but CUDA is unavailable")
 
     # Take the kwargs
     ra_kwargs = ra_kwargs or {}
     env_kwargs = env_kwargs or {}
     step_kwargs = step_kwargs or {}
 
-    with guard:
-        # --- Build environment ---
-        sha_kwargs = ut.filter_kwargs(params.SharedParams, **env_kwargs)
-        wir_kwargs = ut.filter_kwargs(params.WirelessParams, **env_kwargs)
-        ini_kwargs = ut.filter_kwargs(SimulationEnvironment, **env_kwargs)
-        env = SemanticISACScenario(episode, sha_kwargs, wir_kwargs, env_dirpath=save_dirpath, **ini_kwargs)
+    # --- Build environment ---
+    sha_kwargs = ut.filter_kwargs(params.SharedParams, **env_kwargs)
+    wir_kwargs = ut.filter_kwargs(params.WirelessParams, **env_kwargs)
+    ini_kwargs = ut.filter_kwargs(SimulationEnvironment, **env_kwargs)
+    env = SemanticISACScenario(episode, sha_kwargs, wir_kwargs, env_dirpath=save_dirpath, **ini_kwargs)
 
-        set_kwargs = ut.filter_kwargs(env.setup_scenario, **env_kwargs)
-        env.setup_scenario(**set_kwargs)
+    set_kwargs = ut.filter_kwargs(env.setup_scenario, **env_kwargs)
+    env.setup_scenario(**set_kwargs)
 
-        # --- Build and wire up modules ---
-        ra_module = ra_method(env.c, env.wireless, env.geo, env.estimate, **ra_kwargs)
-        tx_module = SEuplinkOFDMpostMRC(env.wireless, ra_module, device)
+    # --- Build and wire up modules ---
+    ra_module = ra_method(env.c, env.wireless, env.geo, env.estimate, **ra_kwargs)
+    tx_module = SEuplinkOFDMpostMRC(env.wireless, ra_module, device)
 
-        trans_mat = np.eye(3)[np.newaxis, :, :].repeat(env.U, axis=0)
-        obs_mat = np.eye(3)[np.newaxis, :, :].repeat(env.U, axis=0)
-        proc_noise_cov = env.geo.ue_vel_cov * env.wireless.frame_time ** 2
-        obs_noise_cov = np.eye(3)[np.newaxis, :, :].repeat(env.U, axis=0)
-        control_mat = np.eye(3)[np.newaxis, :, :].repeat(env.U, axis=0)
-        tracker = LinearKalmanTracker(trans_mat, obs_mat, proc_noise_cov, obs_noise_cov, control_mat)
+    trans_mat = np.eye(3)[np.newaxis, :, :].repeat(env.U, axis=0)
+    obs_mat = np.eye(3)[np.newaxis, :, :].repeat(env.U, axis=0)
+    proc_noise_cov = env.geo.ue_vel_cov * env.wireless.frame_time ** 2
+    obs_noise_cov = np.eye(3)[np.newaxis, :, :].repeat(env.U, axis=0)
+    control_mat = np.eye(3)[np.newaxis, :, :].repeat(env.U, axis=0)
+    tracker = LinearKalmanTracker(trans_mat, obs_mat, proc_noise_cov, obs_noise_cov, control_mat)
 
-        performance = DMimoFarFieldOMA(env.c, env.wireless, env.geo, env.estimate)
+    performance = DMimoFarFieldOMA(env.c, env.wireless, env.geo, env.estimate)
 
-        env.setup_modules(ra_module, tx_module, tracker, performance)
+    env.setup_modules(ra_module, tx_module, tracker, performance)
 
-        # --- Run the simulation ---
-        frame_iter = ut.std_progressbar(range(env.c.num_frames), desc=msg) if not quiet else range(env.c.num_frames)
-        for _ in frame_iter:
-            env.step(**step_kwargs)
+    # --- Run the simulation ---
+    frame_iter = ut.std_progressbar(range(env.c.num_frames), desc=msg) if not quiet else range(env.c.num_frames)
+    for _ in frame_iter:
+        env.step(**step_kwargs)
 
-        # --- Save the whole run: Estimation, and Metrics parameters ---
-        save_path = None
-        if save:
-            ra_method_label = next(key for key, val in ra.available_methods.items() if val == ra_method)
-            filename = os.path.join(save_dirpath, f"{ra_method_label}_ep{episode:04d}.npz")
-            save_path = params.save_params_npz(filename, c=env.c, wireless=env.wireless, geo=env.geo,
-                                          estimate=env.estimate, metrics=env.metrics)
+    # --- Save the whole run: Estimation, and Metrics parameters ---
+    save_path = None
+    if save:
+        ra_method_label = next(key for key, val in ra.available_methods.items() if val == ra_method)
+        filename = os.path.join(save_dirpath, f"{ra_method_label}_ep{episode:04d}.npz")
+        save_path = params.save_params_npz(filename, c=env.c, wireless=env.wireless, geo=env.geo,
+                                      estimate=env.estimate, metrics=env.metrics)
 
-        # --- Small scalar summary for quick cross-episode aggregation ---
-        summary = {
-            "save_path": save_path,
-            "avg_se_achievable": np.nanmean(env.metrics.se_achievable[:-1], axis=0),
-            "avg_se_set": np.nanmean(env.metrics.se_set[:-1], axis=0),
-            "avg_queue": np.nanmean(env.metrics.queue[:-1], axis=0),
-            "avg_misclassification": np.nanmean(env.metrics.misclassification[:-1], axis=0),
-            "avg_risk_predicted": np.nanmean(env.metrics.risk_predicted[:-1], axis=0),
-            "avg_risk_hat": np.nanmean(env.metrics.risk_hat[:-1], axis=0),
-        }
-        return summary
+    # --- Small scalar summary for quick cross-episode aggregation ---
+    summary = {
+        "save_path": save_path,
+        "avg_se_achievable": np.nanmean(env.metrics.se_achievable[:-1], axis=0),
+        "avg_se_set": np.nanmean(env.metrics.se_set[:-1], axis=0),
+        "avg_queue": np.nanmean(env.metrics.queue[:-1], axis=0),
+        "avg_misclassification": np.nanmean(env.metrics.misclassification[:-1], axis=0),
+        "avg_risk_predicted": np.nanmean(env.metrics.risk_predicted[:-1], axis=0),
+        "avg_risk_hat": np.nanmean(env.metrics.risk_hat[:-1], axis=0),
+    }
+    return summary
 
 
 results_labels = ["avg_se_achievable", "avg_se_set", "avg_queue", "avg_misclassification", "avg_risk_predicted", "avg_risk_hat"]
@@ -455,5 +449,5 @@ if __name__ == "__main__":
     env_args = {"debugging": True, "num_frames": 100, "num_ue": num_ue, "traffic_avg": avg_datasize,
                 "queue_max": queue_max, "num_regions": 32, "ue_vel_mean": 5}
     step_args = {"cfo": False}
-    summary = run_episode(1, ra.RoundRobinAllocation, gpu_guard=threading.Semaphore(1), env_kwargs=env_args, step_kwargs=step_args)
+    summary = run_episode(1, ra.RoundRobinAllocation, env_kwargs=env_args, step_kwargs=step_args)
     print(summary)
