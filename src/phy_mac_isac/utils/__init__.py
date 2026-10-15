@@ -6,6 +6,7 @@ from .geometry import (boundary_dist_normal, distance_to_boundary,
                       split_polygon_voronoi, which_region, get_gaussian_from_polygon,
                       build_spatial_index, build_floor_mesh, scene_area_coordinates)
 from .plotting import node_color, node_mark, shade_of, printplot
+from .simulation import run_simulations
 from .stats import qfun, sample_multivariate_gaussian, circular_uniform, semicircular_uniform
 from .system import (check_data, standard_output_dir, uppath,
                      std_progressbar, fixed_progressbar,
