@@ -18,7 +18,6 @@ if __name__ == "__main__":
                 "load_env": False,
             },
             "device": device,
-            "gpu_guard": None,
             "save": False,
             "quiet": True,
         },
