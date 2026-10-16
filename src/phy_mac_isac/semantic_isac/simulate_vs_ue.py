@@ -1,4 +1,8 @@
 import os
+import sys
+if "--cpu" in sys.argv[1:]:
+    os.environ["CUDA_VISIBLE_DEVICES"] = ""
+
 from datetime import datetime
 import time
 import numpy as np
