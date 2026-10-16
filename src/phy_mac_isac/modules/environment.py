@@ -1,4 +1,3 @@
-import threading
 import os
 import numpy as np
 import torch
@@ -8,7 +7,6 @@ from matplotlib import pyplot as plt
 import shapely as sha
 import sionna.rt as rt
 import sionna.phy as phy
-import contextlib
 
 from . import resource_allocation as ra
 from .transmission import TransmissionBase
@@ -94,13 +92,15 @@ class SimulationEnvironment:
         # GEOMETRY and SCENE
         self._load_scene = load_scene
         self._scene_name = scene_name if load_scene else None
-        self.scene, area_coordinates, self._mesh_name = self._build_base_scene(scene_name, area_coordinates)
+        # Mesh name and base area coordinates are needed to compute RadioMap for DL counterpart
+        self.scene, self._base_area_coordinates, self._mesh_name = self._build_base_scene(scene_name, area_coordinates)
         # Set up the environment polygon checking if holes in the area_coordinates are defined
-        if isinstance(area_coordinates, list):
-            env_polygon = sha.geometry.Polygon(*area_coordinates)
-            area_coordinates = np.array(area_coordinates[0])
+        if isinstance(self._base_area_coordinates, list):
+            env_polygon = sha.geometry.Polygon(*self._base_area_coordinates)
+            area_coordinates = np.array(self._base_area_coordinates[0])
         else:
-            env_polygon = sha.geometry.Polygon(area_coordinates)
+            env_polygon = sha.geometry.Polygon(self._base_area_coordinates)
+            area_coordinates = self._base_area_coordinates
         # Create semantic regions as MultiPolygon from boundaries if provided, else split the polygon almost equally
         if boundaries is None:
             # Default is splitting the area in self.c.num_regions equal regions (see __post_init__ in GeometryParams)
@@ -732,43 +732,45 @@ class SimulationEnvironment:
         # Check if a radio map with the same AP position is available
         scene_name = self._scene_name or self._mesh_name.removesuffix(".ply")
         rm_filename = os.path.join(self.rm_folder, f"{scene_name}_AP{self.c.num_ap}_M{self.c.num_ant}")
-        if params.check_dataclass(rm_filename, self.geo, keys=["ap_location"]):
-            self.rm = params.load_radiomap(rm_filename)
-        else:
-            # Copy scene to compute RadioMap considering AP as transmitters (working due to symmetric UL/DL channel)
-            scene_for_rm = self._build_base_scene(self._scene_name)[0]
-            scene_for_rm.tx_array = self.scene.rx_array
-            for l in range(self.L):
-                scene_for_rm.add(rt.Transmitter(name=f"ap_{l}",
-                                                position=self.geo.ap_location[l],
-                                                orientation=self.geo.ap_orientation[l].as_euler('zyx')))
 
-            # Set targets/cars
-            if self.c.num_car:
-                # Start car setup
-                car_material = rt.ITURadioMaterial("car-material",
-                                                   "metal",
-                                                   thickness=0.01,
-                                                   color=(0.8, 0.1, 0.1))
-                # TODO: randomize positions
-                cars = [rt.SceneObject(fname=rt.scene.low_poly_car, name=f"car_{i}", radio_material=car_material) for i in range(self.c.num_car)]
-                self.scene.edit(add=cars)
+        with ut.cache_lock(rm_filename, os.path.join(self.rm_folder, ".lock")):
+            if params.check_dataclass(rm_filename, self.geo, keys=["ap_location"]):
+                self.rm = params.load_radiomap(rm_filename)
+            else:
+                # Copy scene to compute RadioMap considering AP as transmitters (working due to symmetric UL/DL channel)
+                scene_for_rm = self._build_base_scene(self._scene_name, area_coordinates=self._base_area_coordinates)[0]
+                scene_for_rm.tx_array = self.scene.rx_array
+                for l in range(self.L):
+                    scene_for_rm.add(rt.Transmitter(name=f"ap_{l}",
+                                                    position=self.geo.ap_location[l],
+                                                    orientation=self.geo.ap_orientation[l].as_euler('zyx')))
 
-            # Setting some default scattering coefficients and patterns for the scene
-            if self.c.rays["diffuse_reflection"]:
-                for material in self.scene.radio_materials.keys():
-                    try:
-                        self.scene.radio_materials[material].scattering_coefficient = params.scattering_coefficient_dict[material]
-                        self.scene.radio_materials[material].scattering_pattern = params.scattering_pattern_dict[material]
-                    except (AttributeError, KeyError):
-                        print(f"Scattering coefficient and pattern not supported for {material}. "
-                              f"Scattering is disabled for this material.")
+                # Set targets/cars
+                if self.c.num_car:
+                    # Start car setup
+                    car_material = rt.ITURadioMaterial("car-material",
+                                                       "metal",
+                                                       thickness=0.01,
+                                                       color=(0.8, 0.1, 0.1))
+                    # TODO: randomize positions
+                    cars = [rt.SceneObject(fname=rt.scene.low_poly_car, name=f"car_{i}", radio_material=car_material) for i in range(self.c.num_car)]
+                    self.scene.edit(add=cars)
 
-            # Compute RadioMap
-            self.rm = self.rm_solver(scene_for_rm,
-                                     seed=self.episode,
-                                     **ut.filter_kwargs(self.rm_solver, **self.c.rays))
-            params.save_radiomap(rm_filename, self.rm, self.geo.ap_location)
+                # Setting some default scattering coefficients and patterns for the scene
+                if self.c.rays["diffuse_reflection"]:
+                    for material in self.scene.radio_materials.keys():
+                        try:
+                            self.scene.radio_materials[material].scattering_coefficient = params.scattering_coefficient_dict[material]
+                            self.scene.radio_materials[material].scattering_pattern = params.scattering_pattern_dict[material]
+                        except (AttributeError, KeyError):
+                            print(f"Scattering coefficient and pattern not supported for {material}. "
+                                  f"Scattering is disabled for this material.")
+
+                # Compute RadioMap
+                self.rm = self.rm_solver(scene_for_rm,
+                                         seed=self.episode,
+                                         **ut.filter_kwargs(self.rm_solver, **self.c.rays))
+                params.save_radiomap(rm_filename, self.rm, self.geo.ap_location)
 
     def _build_base_scene(self, scene_name: str | None,
                           area_coordinates: list | np.ndarray | None = None) -> tuple[rt.Scene | None, list | np.ndarray, str | None]:
@@ -817,27 +819,28 @@ class SimulationEnvironment:
         return scene, area_coordinates, mesh_name
 
     def _build_default_floor_mesh(self, area_coordinates: list | np.ndarray, filename: str = "") -> str:
-        """Triangulate a polygon generated from `area_coordinates` and export it as a flat mesh (.ply) at
-        z=0, so it can be loaded as a Sionna RT floor SceneObject. Requires `trimesh`.
+        """Generate and cache a floor mesh, coordinating concurrent workers.
 
         :param area_coordinates: list or np.ndarray, vertex coordinates of the area to triangulate.
         :returns: str, path to the exported .ply mesh.
         """
         mesh_folder = os.path.join(self.scene_folder, "meshes")
+        # Generate the folder if not there
+        os.makedirs(mesh_folder, exist_ok=True)
+
         # Check if meshes already exist first
         mesh_path = os.path.join(mesh_folder, filename)
         if not mesh_path.endswith(".ply"):
             mesh_path += ".ply"
-        if os.path.exists(mesh_path):
-            return mesh_path
-        else:
-            mesh = ut.build_floor_mesh(area_coordinates)
 
-            # Generate the folder if not there
-            os.makedirs(mesh_folder, exist_ok=True)
-            # Export and return mesh
-            mesh.export(mesh_path)
-            return mesh_path
+        with ut.cache_lock(mesh_path, os.path.join(mesh_folder, ".lock")):
+            # Recheck after acquiring the lock: another worker may have finished.
+            if not os.path.exists(mesh_path):
+                mesh = ut.build_floor_mesh(area_coordinates)
+                # Export the file as temporary if needed
+                with ut.atomic_output_path(mesh_path) as temporary:
+                    mesh.export(str(temporary))
+        return mesh_path
 
     def _default_mimo_array(self, antenna_spacing: float):
         return rt.PlanarArray(num_rows=self.M_h,
