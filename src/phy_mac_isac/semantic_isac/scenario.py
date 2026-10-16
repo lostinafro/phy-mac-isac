@@ -69,7 +69,11 @@ class SemanticISACScenario(SimulationEnvironment):
 
         # Generate data at the UE and check the queue
         delta_queue = self.wireless.queue_max - self.metrics.queue[self.frame - 1]
-        new_data = self.wireless.sample_new_data(rng=self.rng) if not self._load_env else self.metrics.gen_bit[self.frame]
+        if self._load_env:  # Take the already stored values
+            new_data = self.wireless.gen_bit[self.frame]
+        else:   # Generate new data and save it in the wireless paramer
+            new_data = self.wireless.sample_new_data(rng=self.rng)
+            self.wireless.update(frame=self.frame, gen_bit=new_data)
         queue = self.metrics.queue[self.frame - 1] + new_data
 
         ### Perform allocation based on prior
@@ -154,7 +158,6 @@ class SemanticISACScenario(SimulationEnvironment):
 
         ### Evaluate Metrics
         self.metrics.update(self.frame, ue_idx,
-                            gen_bit=new_data,
                             queue=queue,
                             delta_queue=delta_queue,
                             large_scale=beta.mean(axis=-1),
