@@ -107,7 +107,6 @@ class Metrics(BaseMetrics):
         self.ue_slot_map = np.zeros((self.c.num_frames + 1, self.c.num_slots, self.c.num_ue), dtype=bool)
         self.large_scale = np.zeros((self.c.num_frames + 1, self.c.num_ap, self.c.num_ue, ))
         self.large_scale_hat = np.zeros((self.c.num_frames + 1, self.c.num_ap, self.c.num_ue))
-        self.gen_bit = np.zeros((self.c.num_frames + 1, self.c.num_ue))
         self.queue = np.zeros((self.c.num_frames + 1, self.c.num_ue), dtype=np.int32)
         self.delta_queue = np.zeros((self.c.num_frames + 1, self.c.num_ue), dtype=np.int32)
         self.se_achievable = np.full((self.c.num_frames + 1, self.c.num_ue), np.nan)

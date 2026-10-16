@@ -185,6 +185,8 @@ class WirelessParams:
     nob_ue: float = field(init=False)
     cfo_base: np.ndarray = field(init=False)
     cto_base: np.ndarray = field(init=False)
+    # Generated data
+    gen_bit: np.ndarray = field(init=False)
 
     def __post_init__(self):
         """Compute derived attributes after initialization."""
@@ -239,6 +241,8 @@ class WirelessParams:
         if isinstance(self.queue_reliability, (float, int)):
             self.queue_reliability = self.queue_reliability * np.ones(self.c.num_ue)
 
+        # Set initial data to full 0
+        self.gen_bit = np.zeros((self.c.num_frames, self.c.num_ue), dtype=np.int32)
 
     def update(self, frame: int | np.ndarray = 0, **kwargs):
         """Update wireless parameters with new values."""
@@ -250,7 +254,7 @@ class WirelessParams:
                     # Take the right generator
                     value = getattr(stats, value)
                     setattr(self, key, value)
-                elif key == "channel":
+                elif key in "gen_bit":
                     attr = getattr(self, key)
                     attr[frame] = value
                 else:
@@ -738,7 +742,6 @@ class Metrics:
     large_scale: np.ndarray = field(default=None, init=False)
     large_scale_hat: np.ndarray = field(default=None, init=False)
     # Communication parameters
-    gen_bit: np.ndarray = field(default=None, init=False)
     queue: np.ndarray = field(default=None, init=False)
     delta_queue: np.ndarray = field(default=None, init=False)
     sinr: np.ndarray = field(default=None, init=False)
