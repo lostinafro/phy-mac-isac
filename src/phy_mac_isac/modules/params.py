@@ -242,7 +242,7 @@ class WirelessParams:
             self.queue_reliability = self.queue_reliability * np.ones(self.c.num_ue)
 
         # Set initial data to full 0
-        self.gen_bit = np.zeros((self.c.num_frames, self.c.num_ue), dtype=np.int32)
+        self.gen_bit = np.zeros((self.c.num_frames + 1, self.c.num_ue), dtype=np.int32)
 
     def update(self, frame: int | np.ndarray = 0, **kwargs):
         """Update wireless parameters with new values."""
