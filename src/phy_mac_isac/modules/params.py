@@ -918,7 +918,10 @@ def save_radiomap(filepath: str, rm: RadioMap, ap_location: np.ndarray) -> str:
     if not filepath.endswith(".npz"):
         filepath += ".npz"
     os.makedirs(os.path.dirname(filepath), exist_ok=True)
-    np.savez_compressed(filepath, **data)
+
+    with ut.atomic_output_path(filepath) as temporary:
+        np.savez_compressed(temporary, **data)
+
     return filepath
 
 
