@@ -6,6 +6,47 @@ import numpy as np
 import pandas as pd
 from tqdm import tqdm
 from datetime import date
+from contextlib import contextmanager
+from pathlib import Path
+import tempfile
+import hashlib
+from filelock import FileLock
+
+
+@contextmanager
+def atomic_output_path(filepath: str | Path):
+    """Write to a temporary file before replacing the destination.
+
+    :param filepath: Final destination of the completed file.
+    :yields: Temporary path with the same extension as the destination.
+    """
+    destination = Path(filepath)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+
+    descriptor, temporary_name = tempfile.mkstemp(
+        dir=destination.parent,
+        prefix=f".{destination.stem}_",
+        suffix=destination.suffix,
+    )
+    os.close(descriptor)
+    temporary = Path(temporary_name)
+
+    try:
+        yield temporary
+        os.replace(temporary, destination)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def cache_lock(filepath: str | Path, lock_directory: str | Path) -> FileLock:
+    """Return a lock associated with a cache file."""
+    resource = str(Path(filepath).resolve())
+    identifier = hashlib.sha256(resource.encode()).hexdigest()
+
+    directory = Path(lock_directory)
+    directory.mkdir(parents=True, exist_ok=True)
+
+    return FileLock(str(directory / f"{identifier}.lock"))
 
 
 def check_data(data_shape: tuple, prefix: str, folder: str, overwrite_flag: bool = False):
