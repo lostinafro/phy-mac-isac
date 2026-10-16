@@ -8,9 +8,8 @@ from .geometry import (boundary_dist_normal, distance_to_boundary,
 from .plotting import node_color, node_mark, shade_of, printplot
 from .simulation import run_simulations
 from .stats import qfun, sample_multivariate_gaussian, circular_uniform, semicircular_uniform
-from .system import (check_data, standard_output_dir, uppath,
-                     std_progressbar, fixed_progressbar,
-                     get_processing_resources, select_available_gpus)
+from .system import (atomic_output_path, check_data, standard_output_dir, uppath,
+                     std_progressbar, fixed_progressbar, get_processing_resources, select_available_gpus)
 from .units import lin2db, db2lin, dbm2watt, watt2dbm, np_ceil
 from .wireless import (channel_types, square_positioning, eval_fspl, eval_ue_ap_dist,
                        eval_path_loss, fading, thermal_noise, thermal_noise_dbm,
