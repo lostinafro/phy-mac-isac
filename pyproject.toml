@@ -19,10 +19,12 @@ classifiers = [
     "Topic :: Scientific/Engineering",
 ]
 dependencies = [
+    "filelock",
     "GPUtil",
     "matplotlib",
     "mitsuba",
     "numpy",
+    "nvidia-ml-py",
     "pandas",
     "rtree",
     "scipy",
@@ -31,7 +33,6 @@ dependencies = [
     "torch",
     "tqdm",
     "trimesh",
-    "nvidia-ml-py",
 ]
 
 [project.urls]
