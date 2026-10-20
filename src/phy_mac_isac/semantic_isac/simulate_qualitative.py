@@ -9,7 +9,7 @@ import numpy as np
 import pandas as pd
 import warnings
 from ..modules import resource_allocation as ra
-from ..utils import check_data, get_processing_resources, run_simulations
+from ..utils import atomic_output_path, get_processing_resources, run_simulations
 from . import parameters as semantic_params
 from .scenario import run_episode, results_labels, load_summary_from_npz, common_parser
 
@@ -58,6 +58,10 @@ if __name__ == "__main__":
 
     ap_location = scale * np.array([[60, -60., 10], [20, 50., 10], [-50, -20, 10]], dtype=np.float64)
 
+    # Other simulation values
+    sweep_values = num_ue_vec
+    sweep_columns = "num_ues"
+
     # Cycling through methods
     for ra_label in ra_methods:
         # Set RA method
@@ -65,21 +69,19 @@ if __name__ == "__main__":
 
         # Saving parameters
         prefix = ra_label + "_qualitative"
-        data_shape = (len(num_ue_vec), len(results_labels))
-        avg_results, filename = check_data(data_shape, prefix, data_folder, overwrite_flag=overwrite)
+        data_shape = (len(sweep_values), len(results_labels))
+        avg_results = np.full(data_shape, np.nan)
+        filename = os.path.join(data_folder, f"{prefix}.csv")
 
         # Start processing
-        for m, num_ue in enumerate(num_ue_vec):
+        for m, sweep_value in enumerate(sweep_values):
             # Printing info about variable under test
-            print(f"Running {prefix} with U={num_ue}:", end=" ")
+            print(f"Running {prefix} with U={sweep_value}:", end=" ")
 
-            ## CPU/GPU Performances
-            # Setting up maximum no. of workers and GPU semaphore to avoid oversubscription of CPU/GPU memory
-            cpu_slots, gpu_slots = get_processing_resources(concurrent, episode_device, num_ue)
-            max_workers = min(cpu_slots, gpu_slots) if gpu_slots else cpu_slots
+
 
             # Define save folder per episode
-            save_ep_dirpath = os.path.join(data_folder, prefix + f"_U{num_ue:03d}")
+            save_ep_dirpath = os.path.join(data_folder, prefix + f"_U{sweep_value:03d}")
             os.makedirs(save_ep_dirpath, exist_ok=True)
 
             ## Check which episodes have already been run
@@ -94,9 +96,9 @@ if __name__ == "__main__":
                     except Exception as e:
                         print(f"\tWarning: couldn't reuse cached episode {ep} ({out_path}): {e} -- re-running it.")
                 episode_kwargs.append(dict(episode=ep, ra_method=ra_method,
-                                           env_kwargs={"num_ue": int(num_ue),
+                                           env_kwargs={"num_ue": int(sweep_value),
                                                        "num_slots": 1,
-                                                       "num_regions": len(regions),
+                                                       "sweep_value": len(regions),
                                                        "num_scs": num_scs,
                                                        "num_ap": len(ap_location),
                                                        "debugging": True,
@@ -104,36 +106,49 @@ if __name__ == "__main__":
                                                        "queue_max": queue_max[m],
                                                        "area_coordinates": area,
                                                        "boundaries": regions,
-                                                       "init_ue_pos": ue_init_pos[:num_ue],
+                                                       "init_ue_pos": ue_init_pos[:sweep_value],
                                                        "ap_pos": ap_location,
-                                                       "ue_vel_mean": vel_mean[:num_ue],
+                                                       "ue_vel_mean": vel_mean[:sweep_value],
                                                        "ue_vel_cov": vel_std},
                                            step_kwargs={"cfo": False},
                                            save_dirpath=save_ep_dirpath,
                                            device=episode_device,
                                            quiet=quiet,
-                                           msg=f"RA: {ra_label} - U={num_ue:02d} - Episode: {ep:02d}/{num_episodes - 1:02d}"))
+                                           msg=f"RA: {ra_label} - U={sweep_value:02d} - Episode: {ep:02d}/{num_episodes - 1:02d}"))
 
+            # Show the number of episodes remaining
             print(f"{len(results)} episodes already done, {len(episode_kwargs)} remaining.")
 
-            if len(episode_kwargs) == 0:
-                continue
-
-            # Start simulation on the missing episodes
+            # Compute simulation time
             start_time = time.time()
-            results.extend(run_simulations(run_episode,
-                                           episode_kwargs,
-                                           device=episode_device,
-                                           parallel=parallel,
-                                           max_workers=max_workers,
-                                           torch_threads=1))
+
+            if episode_kwargs:
+                ## CPU/GPU Performances
+                # Setting up maximum no. of workers and GPU semaphore to avoid oversubscription of CPU/GPU memory
+                cpu_slots, gpu_slots = get_processing_resources(concurrent, episode_device, sweep_value)
+                max_workers = min(cpu_slots, gpu_slots) if gpu_slots else cpu_slots
+
+                # Start simulation on the missing episodes
+                results.extend(run_simulations(run_episode,
+                                               episode_kwargs,
+                                               device=episode_device,
+                                               parallel=parallel,
+                                               max_workers=max_workers,
+                                               torch_threads=1))
+
+            # Aggregate both cached and newly computed episodes.
+            if len(results) != num_episodes:
+                raise RuntimeError(f"Expected {num_episodes} episode summaries, but received {len(results)}")
 
             # Average the scalar summaries across episodes
-            avg_results[m] = np.nanmean(np.array([[r[label] for label in results_labels] for r in results]), axis=(0, -1))
+            summary_values = np.asarray([[res[label] for label in results_labels] for res in results], dtype=float)
+            avg_results[m] = np.nanmean(summary_values, axis=(0, -1))
 
             avg_df = pd.DataFrame(avg_results, columns=results_labels)
-            avg_df.insert(0, "num_ue", num_ue_vec)
-            avg_df.to_csv(filename, index=False)
+            avg_df.insert(0, sweep_columns, sweep_values)
+
+            with atomic_output_path(filename) as temporary:
+                avg_df.to_csv(temporary, index=False)
 
             elapsed = time.time() - start_time
             print(f"\t...done in {elapsed:.3f} seconds")
