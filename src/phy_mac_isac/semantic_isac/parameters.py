@@ -10,7 +10,7 @@ from ..modules.params import WirelessParams as BaseWireless
 from ..modules.params import Metrics as BaseMetrics
 
 ## DEFAULT PARAMETERS
-NUM_EP = int(1e3)
+NUM_EP = int(1e1)
 # Scenario
 NUM_AP = 3
 NUM_ANT = 2
@@ -121,7 +121,7 @@ class Metrics(BaseMetrics):
         self.risk_hat = np.zeros((self.c.num_frames + 1, self.c.num_ue))
 
 
-def arrival_rate_init(avg_se: float, num_ue: int = NUM_UE, num_slots: int = NUM_SLOTS,
+def arrival_rate_init(avg_se: float, num_ue: int | np.ndarray = NUM_UE, num_slots: int = NUM_SLOTS,
                       bw: float = NUM_SCS * 15e3 * 2 ** NUMEROLOGY, slot_time: float = 1e-3, rho: float= 0.75):
     lambda_max = num_slots / num_ue * avg_se * bw * slot_time
     return rho * lambda_max, 10 * lambda_max
