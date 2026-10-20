@@ -103,10 +103,10 @@ class SimulationEnvironment:
             area_coordinates = self._base_area_coordinates
         # Create semantic regions as MultiPolygon from boundaries if provided, else split the polygon almost equally
         if boundaries is None:
-            # Default is splitting the area in self.c.num_regions equal regions (see __post_init__ in GeometryParams)
+            # Default is splitting the area in self.c.sweep_value equal regions (see __post_init__ in GeometryParams)
             semantic_regions = ut.split_polygon_voronoi(polygon=env_polygon, n=self.c.num_regions, rng=self.rng)
         else:
-            assert boundaries.shape[0] == self.c.num_regions, "boundaries must comprises as many regions as num_regions"
+            assert boundaries.shape[0] == self.c.num_regions, "boundaries must comprises as many regions as sweep_value"
             semantic_regions = sha.MultiPolygon([sha.Polygon(boundaries[i]) for i in range(self.c.num_regions)])
 
         # Initialize geometrical shape
@@ -733,6 +733,28 @@ class SimulationEnvironment:
         scene_name = self._scene_name or self._mesh_name.removesuffix(".ply")
         rm_filename = os.path.join(self.rm_folder, f"{scene_name}_AP{self.c.num_ap}_M{self.c.num_ant}")
 
+        # Set targets/cars
+        if self.c.num_car:
+            # Start car setup
+            car_material = rt.ITURadioMaterial("car-material",
+                                               "metal",
+                                               thickness=0.01,
+                                               color=(0.8, 0.1, 0.1))
+            cars = [rt.SceneObject(fname=rt.scene.low_poly_car, name=f"car_{i}", radio_material=car_material) for i in
+                    range(self.c.num_car)]
+            self.scene.edit(add=cars)
+
+        # Setting some default scattering coefficients and patterns for the scene
+        if self.c.rays["diffuse_reflection"]:
+            for material in self.scene.radio_materials.keys():
+                try:
+                    self.scene.radio_materials[material].scattering_coefficient = params.scattering_coefficient_dict[
+                        material]
+                    self.scene.radio_materials[material].scattering_pattern = params.scattering_pattern_dict[material]
+                except (AttributeError, KeyError):
+                    print(f"Scattering coefficient and pattern not supported for {material}. "
+                          f"Scattering is disabled for this material.")
+
         with ut.cache_lock(rm_filename, os.path.join(self.rm_folder, ".lock")):
             if params.check_dataclass(rm_filename, self.geo, keys=["ap_location"]):
                 self.rm = params.load_radiomap(rm_filename)
@@ -744,27 +766,6 @@ class SimulationEnvironment:
                     scene_for_rm.add(rt.Transmitter(name=f"ap_{l}",
                                                     position=self.geo.ap_location[l],
                                                     orientation=self.geo.ap_orientation[l].as_euler('zyx')))
-
-                # Set targets/cars
-                if self.c.num_car:
-                    # Start car setup
-                    car_material = rt.ITURadioMaterial("car-material",
-                                                       "metal",
-                                                       thickness=0.01,
-                                                       color=(0.8, 0.1, 0.1))
-                    # TODO: randomize positions
-                    cars = [rt.SceneObject(fname=rt.scene.low_poly_car, name=f"car_{i}", radio_material=car_material) for i in range(self.c.num_car)]
-                    self.scene.edit(add=cars)
-
-                # Setting some default scattering coefficients and patterns for the scene
-                if self.c.rays["diffuse_reflection"]:
-                    for material in self.scene.radio_materials.keys():
-                        try:
-                            self.scene.radio_materials[material].scattering_coefficient = params.scattering_coefficient_dict[material]
-                            self.scene.radio_materials[material].scattering_pattern = params.scattering_pattern_dict[material]
-                        except (AttributeError, KeyError):
-                            print(f"Scattering coefficient and pattern not supported for {material}. "
-                                  f"Scattering is disabled for this material.")
 
                 # Compute RadioMap
                 self.rm = self.rm_solver(scene_for_rm,
@@ -998,7 +999,7 @@ if __name__ == "__main__":
     num_ue = 12
     avg_datasize, queue_max = params.arrival_rate_init(avg_se=2, num_ue=num_ue)
     env_args = {"debugging": True, "num_frames": 50, "num_ue": num_ue, "traffic_avg": avg_datasize,
-                "queue_max": queue_max, "num_regions": 32, "ue_vel_mean": 5}
+                "queue_max": queue_max, "sweep_value": 32, "ue_vel_mean": 5}
     step_args = {"cfo": False}
     res = run_episode(1, ra.RoundRobinAllocation, env_kwargs=env_args, step_kwargs=step_args)
     print(res)
