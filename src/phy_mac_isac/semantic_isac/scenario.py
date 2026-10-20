@@ -175,7 +175,7 @@ class SemanticISACScenario(SimulationEnvironment):
                             ue_slot_map=ue_slot_map,
                             )
         # Print errors
-        every = self.c.num_frames // 100
+        every = max(1, self.c.num_frames // 100)
         if self.debug and (not (self.frame % every) or self.frame == self.c.num_frames - 1):
             if self.frame == 0:
                 frame_range = np.array([-1, 0])
