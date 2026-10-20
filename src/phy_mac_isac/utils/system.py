@@ -91,8 +91,8 @@ def fixed_progressbar(total_iteration, **kwargs):
 def get_processing_resources(num_scripts: int,
                              device: str,
                              num_ue: int = 1,
-                             mib_vram_per_ue: int | float = 200,
-                             mib_vram_baseline: int | float = 210,
+                             mib_vram_per_ue: int | float = 300,
+                             mib_vram_baseline: int | float = 350,
                              measured_episode_mib: int | float | None = None,) -> tuple[int, int | None]:
     """Return CPU workers and GPU episode slots for the selected device.
 
