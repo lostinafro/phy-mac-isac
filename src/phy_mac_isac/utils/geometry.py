@@ -8,6 +8,8 @@ from rtree import index
 import trimesh
 from sionna import rt
 import mitsuba as mi
+import hashlib
+import json
 
 
 def boundary_dist_normal(points: np.ndarray, polygon: Polygon, eps: float = 1e-6,
@@ -438,3 +440,26 @@ def scene_area_coordinates(scene: rt.Scene, z_tol: float = 1e-3) -> np.ndarray:
 
     area_coordinates = np.hstack([hull_xy, np.full((hull_xy.shape[0], 1), floor_z)])
     return area_coordinates
+
+
+def floor_mesh_cache_key(area_coordinates: list | np.ndarray) -> str:
+    """Return a cache key incorporating all coordinates and polygon holes."""
+
+    def normalize(value):
+        if isinstance(value, np.ndarray):
+            return normalize(value.tolist())
+        if isinstance(value, (list, tuple)):
+            return [normalize(item) for item in value]
+        return float(value)
+
+    payload = json.dumps(
+        {
+            "format": "floor-v1",
+            "coordinates": normalize(area_coordinates),
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+        allow_nan=False,
+    )
+
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
