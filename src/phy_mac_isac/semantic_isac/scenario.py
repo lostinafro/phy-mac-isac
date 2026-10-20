@@ -299,7 +299,7 @@ class SemanticISACScenario(SimulationEnvironment):
         if np.any(np.sum(ue_slot_map, axis=-1) > 1):
             # print("Allocation is not OMA")
             return False
-        if np.any(np.nonzero(queue > self.wireless.queue_max)):
+        if np.any(queue > self.wireless.queue_max):
             # print("Queue is exceeding its maximum for at least one UE")
             return False
         return True
@@ -450,7 +450,7 @@ if __name__ == "__main__":
     num_ue = 12
     avg_datasize, queue_max = semantic_params.arrival_rate_init(avg_se=2, num_ue=num_ue)
     env_args = {"debugging": True, "num_frames": 100, "num_ue": num_ue, "traffic_avg": avg_datasize,
-                "queue_max": queue_max, "num_regions": 32, "ue_vel_mean": 5}
+                "queue_max": queue_max, "sweep_value": 32, "ue_vel_mean": 5}
     step_args = {"cfo": False}
     summary = run_episode(1, ra.RoundRobinAllocation, env_kwargs=env_args, step_kwargs=step_args)
     print(summary)
