@@ -36,7 +36,9 @@ if __name__ == "__main__":
 
     # Compute datasize and queue_max
     # Check maximum load for non-trivial/non_explosive queues
-    avg_datasize, queue_max = semantic_params.arrival_rate_init(avg_se=2, num_ue=num_ue_vec)
+    num_scs = 60
+    bw = num_scs * 2 ** semantic_params.NUMEROLOGY * 15e3
+    avg_datasize, queue_max = semantic_params.arrival_rate_init(avg_se=2, num_ue=num_ue_vec, bw=bw)
     scale = 3
 
     # Set the area and the regions
@@ -95,7 +97,7 @@ if __name__ == "__main__":
                                            env_kwargs={"num_ue": int(num_ue),
                                                        "num_slots": 1,
                                                        "num_regions": len(regions),
-                                                       "num_scs": 60,
+                                                       "num_scs": num_scs,
                                                        "num_ap": len(ap_location),
                                                        "debugging": True,
                                                        "traffic_avg": avg_datasize[m],
@@ -125,16 +127,6 @@ if __name__ == "__main__":
                                            parallel=parallel,
                                            max_workers=max_workers,
                                            torch_threads=1))
-            # if episode_kwargs:
-            #     if parallel:
-            #         import torch
-            #         torch.set_num_threads(cpu_slots)
-            #         with ThreadPoolExecutor(max_workers=cpu_workers) as executor:
-            #             futures = [executor.submit(run_episode, **kw) for kw in episode_kwargs]
-            #             results.extend(f.result() for f in futures)
-            #     else:
-            #         for ep_kw in episode_kwargs:
-            #             results.append(run_episode(**ep_kw))
 
             # Average the scalar summaries across episodes
             avg_results[m] = np.nanmean(np.array([[r[label] for label in results_labels] for r in results]), axis=(0, -1))
