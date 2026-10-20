@@ -1,10 +1,11 @@
+import os
 from copy import deepcopy
 from pathlib import Path
 import numpy as np
 from dataclasses import dataclass, field
 
 from .. import utils as ut
-from ..modules.params import SCENE_FOLDER, DATA_FOLDER
+from ..modules.params import SCENE_FOLDER, DATA_FOLDER, CACHE_FOLDER
 from ..modules.params import SharedParams as BaseShared
 from ..modules.params import WirelessParams as BaseWireless
 from ..modules.params import Metrics as BaseMetrics
@@ -32,7 +33,14 @@ QUEUE_RELIABILITY = 0.95         # 1 - epsilon in the paper
 UE_POW = ut.dbm2watt(-10)
 
 # DEFAULT FOLDERS
-RM_FOLDER =  str(Path(__file__).resolve().parent / "rm")
+RM_FOLDER =  os.path.expandvars(
+    os.path.expanduser(
+        os.environ.get(
+            "PHY_MAC_ISAC_RM_DIR",
+            str(Path(CACHE_FOLDER) / "semantic_isac" / "rm"),
+        )
+    )
+)
 
 # RayTracer and RadioMap parameters
 RT_PARAM = {
