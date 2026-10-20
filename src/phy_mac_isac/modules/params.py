@@ -933,7 +933,7 @@ def load_radiomap(filepath: str):
         return FakeRadioMap(**data)
 
 
-def arrival_rate_init(avg_se: float, num_ue: int = NUM_UE, num_slots: int = NUM_SLOTS,
+def arrival_rate_init(avg_se: float, num_ue: int | np.ndarray = NUM_UE, num_slots: int = NUM_SLOTS,
                       bw: float = NUM_SCS * 15e3 * 2 ** NUMEROLOGY, slot_time: float = 1e-3, rho: float= 0.75):
     lambda_max = num_slots / num_ue * avg_se * bw * slot_time
     return rho * lambda_max, 10 * lambda_max
