@@ -211,7 +211,7 @@ if __name__ == "__main__":
                 df[f"{method}_99"] = row[:, 3]
             # Saving
 
-            df.insert(0, var, np.arange(len(trial)))
+            df.insert(0, var, np.asarray(trial))
             df.to_csv(os.path.join(data_path, f"{metric}_vs_{var}.csv"), index=False)
 
 
