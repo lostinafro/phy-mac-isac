@@ -45,6 +45,9 @@ PACKAGE_ROOT = Path(__file__).resolve().parents[1]
 SCENE_FOLDER = os.environ.get("PHY_MAC_ISAC_SCENE_DIR", str(PACKAGE_ROOT / "scenes"))
 DATA_FOLDER = os.environ.get("PHY_MAC_ISAC_DATA_DIR", str(PACKAGE_ROOT / "data"))
 
+_DEFAULT_CACHE_ROOT = (Path(os.environ.get("XDG_CACHE_HOME", str(Path.home() / ".cache"))) / "phy_mac_isac")
+CACHE_FOLDER =  os.path.expanduser(os.environ.get("PHY_MAC_ISAC_CACHE_DIR", str(_DEFAULT_CACHE_ROOT)))
+
 # RayTracer and RadioMap parameters
 RT_PARAM = {
     "max_depth": 3,
