@@ -80,7 +80,9 @@ class SimulationEnvironment:
         # Folders
         self.env_folder = env_dirpath
         self.scene_folder = scene_dirpath if load_scene else None
-        self.rm_folder = rm_dirpath or os.path.join(self.env_folder, "rm")
+        self.mesh_folder = os.path.join(params.CACHE_FOLDER, "meshes")
+        self.lock_folder = os.path.join(params.CACHE_FOLDER, "locks")
+        self.rm_folder = rm_dirpath or os.path.join(params.CACHE_FOLDER, "rm")
 
         # SHARED PARAMETERS
         self.c = self.shared_type(**shared_params)       # Parameters collecting shared variables
@@ -755,7 +757,7 @@ class SimulationEnvironment:
                     print(f"Scattering coefficient and pattern not supported for {material}. "
                           f"Scattering is disabled for this material.")
 
-        with ut.cache_lock(rm_filename, os.path.join(self.rm_folder, ".lock")):
+        with ut.cache_lock(rm_filename, self.lock_folder):
             if params.check_dataclass(rm_filename, self.geo, keys=["ap_location"]):
                 self.rm = params.load_radiomap(rm_filename)
             else:
@@ -799,11 +801,10 @@ class SimulationEnvironment:
                 first_quadrant = params.ROOM_SIDE / 2 * np.array([1, 1, 0])
                 # Order is left-top first, then clockwise.
                 area_coordinates = np.array([[-1, 1, 0], [1, 1, 0], [1, -1, 0], [-1, -1, 0]]) * first_quadrant
-                # Default name
-                mesh_name = f"default_room_{int(params.ROOM_SIDE):02d}m"
-            else:
-                convex_hull = area_coordinates[0] if isinstance(area_coordinates, list) else area_coordinates
-                mesh_name = "custom_points" + "_".join([f"{int(x):02d}" for x in convex_hull[:, :2].flatten()])
+
+            # Hash naming in a consistent way
+            mesh_name = f"floor_{ut.floor_mesh_cache_key(area_coordinates)}"
+
             if self._load_scene:
                 scene = rt.load_scene()  # Empty sionna.rt scene
                 # Generate just the floor by meshing the Polygon of the Area
@@ -825,16 +826,15 @@ class SimulationEnvironment:
         :param area_coordinates: list or np.ndarray, vertex coordinates of the area to triangulate.
         :returns: str, path to the exported .ply mesh.
         """
-        mesh_folder = os.path.join(self.scene_folder, "meshes")
         # Generate the folder if not there
-        os.makedirs(mesh_folder, exist_ok=True)
+        os.makedirs(self.mesh_folder, exist_ok=True)
 
         # Check if meshes already exist first
-        mesh_path = os.path.join(mesh_folder, filename)
+        mesh_path = os.path.join(self.mesh_folder, filename)
         if not mesh_path.endswith(".ply"):
             mesh_path += ".ply"
 
-        with ut.cache_lock(mesh_path, os.path.join(mesh_folder, ".lock")):
+        with ut.cache_lock(mesh_path, self.lock_folder):
             # Recheck after acquiring the lock: another worker may have finished.
             if not os.path.exists(mesh_path):
                 mesh = ut.build_floor_mesh(area_coordinates)
