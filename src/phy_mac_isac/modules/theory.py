@@ -61,7 +61,7 @@ class DMimoFarFieldOMA(PerformanceBase):
         x_outer = np.einsum('uli,ulj->ulij', x_rel, x_rel)  # (U, L, d, d)
 
         A = np.eye(d)[np.newaxis, np.newaxis] - x_outer / x_norm_sq[..., np.newaxis, np.newaxis]  # (U, L, d, d)
-        B = (np.matrix_transpose(self.geo.antenna_location) - self.geo.ap_location[:, :, np.newaxis])[:, :d, :d] # (L, d, d)
+        B = (np.matrix_transpose(self.geo.antenna_location) - self.geo.ap_location[:, :, np.newaxis])[:, :d, :] # (L, d, M)
         a_dotdot = (self.wireless.sc_spacing ** 2 * Sigma2 / (speed_of_light ** 2) * x_outer
                     + self.wireless.wavelength ** (-2) / M * A @ (B @ np.matrix_transpose(B))[np.newaxis] @ A)  # (U, L, d, d)
         nabla_xx = (2 * np.pi) ** 2 * np.sum((beta / x_norm_sq[np.newaxis])[..., np.newaxis, np.newaxis] * a_dotdot[np.newaxis], axis=2) # (S, U, d, d)
