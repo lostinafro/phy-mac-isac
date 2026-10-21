@@ -125,7 +125,8 @@ class SEuplinkOFDMpostMRC(TransmissionBase):
     :param wireless: WirelessParams, used for a default noise level if `no` isn't given.
     """
 
-    def __init__(self, wireless: params.WirelessParams, ra_module: ra.ResourceAllocationBase, device: torch.device):
+    def __init__(self, wireless: params.WirelessParams, ra_module: ra.ResourceAllocationBase, device: torch.device,
+                 compiled_core: bool = False):
         super().__init__(wireless, ra_module, device)
         self.apply_channel = phy.channel.ApplyOFDMChannel()
         self.rg_mapper = phy.ofdm.ResourceGridMapper(ra_module.rg)
@@ -137,9 +138,12 @@ class SEuplinkOFDMpostMRC(TransmissionBase):
             if isinstance(block, torch.nn.Module):
                 block.to(self.device)
 
-        # Compile the core method if possible
-        compile_mode = "reduce-overhead" if self.device.type == "cuda" else "default"
-        self._compiled_core = torch.compile(self._core, mode=compile_mode)
+        self._run_core = self._core
+
+        # Compile the core method if possible (Eager mode was find slightly faster)
+        if compiled_core:
+            compile_mode = "reduce-overhead" if self.device.type == "cuda" else "default"
+            self._compiled_core = torch.compile(self._core, mode=compile_mode)
 
     def _core(self, h: torch.Tensor, tx_power: torch.Tensor, no: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         """All-tensor hot path -- this is the part that gets compiled in CUDA."""
@@ -191,5 +195,5 @@ class SEuplinkOFDMpostMRC(TransmissionBase):
         h = torch.as_tensor(channel, dtype=torch.complex64, device=self.device)
 
         # Call the core method
-        sinr, se = self._core(h, tx_power_t, no_t)
+        sinr, se = self._run_core(h, tx_power_t, no_t)
         return sinr.cpu().numpy(), se.cpu().numpy()
