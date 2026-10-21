@@ -1,6 +1,6 @@
 # phy-mac-isac
 
-Research software for physical and MAC layer integrated sensing and communications (ISAC) simulations using Sionna.
+Research software for physical and MAC layer integrated sensing and communications (ISAC) simulations using [Sionna](https://github.com/NVlabs/sionna).
 This software is made under the under the Marie Skłodowska-Curie Action Postdoctoral Fellowship 
 project [SCOPES](https://cordis.europa.eu/project/id/101204088) with grant agreement No. 101204088. 
 
