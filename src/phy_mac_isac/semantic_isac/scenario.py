@@ -129,8 +129,11 @@ class SemanticISACScenario(SimulationEnvironment):
         se_per_scheduled_ue[se_per_scheduled_ue > se_achievable] = 0.
         # Re-init margin for UE with achievable SE while reducing margin for UE with unachievable SE
         if self.frame < self.c.num_frames - 1:
-            self.se_margin[self.frame + 1:, ue_idx[se_per_scheduled_ue > 0.]] /= self.se_margin[0, ue_idx[se_per_scheduled_ue > 0.]]
-            self.se_margin[self.frame + 1:, ue_idx[se_per_scheduled_ue == 0.]] *= self.se_margin[0, ue_idx[se_per_scheduled_ue == 0.]]
+            ue_idx_tx = ue_idx[se_per_scheduled_ue > 0.]
+            self.se_margin[self.frame + 1:, ue_idx_tx] /= self.se_margin[0, ue_idx_tx]
+            self.se_margin[self.frame + 1:, ~ue_idx_tx] *= self.se_margin[0, ~ue_idx_tx]
+            # Clipping margins to reasonable values
+            self.se_margin[self.frame + 1:] = np.clip(self.se_margin[self.frame + 1:], 0.001, 0.999)
 
         # Taking the amount of bits transmitted and update the queue
         bits_tx = np.asarray(np.floor(se_per_scheduled_ue * self.wireless.bw * self.wireless.slot_time), dtype=np.int32)
@@ -446,7 +449,7 @@ if __name__ == "__main__":
     num_ue = 12
     avg_datasize, queue_max = semantic_params.arrival_rate_init(avg_se=2, num_ue=num_ue)
     env_args = {"debugging": True, "num_frames": 100, "num_ue": num_ue, "traffic_avg": avg_datasize,
-                "queue_max": queue_max, "sweep_value": 32, "ue_vel_mean": 5}
+                "queue_max": queue_max, "num_regions": 32, "ue_vel_mean": 5}
     step_args = {"cfo": False}
     summary = run_episode(1, ra.RoundRobinAllocation, env_kwargs=env_args, step_kwargs=step_args)
     print(summary)
