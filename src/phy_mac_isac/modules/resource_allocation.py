@@ -284,14 +284,14 @@ class SemanticRiskAllocation(ResourceAllocationBase):
             return mask
         else:
             mask[np.arange(num_forced), idx_forced] = True
-            # Remaining slots
-            remaining_slots = np.minimum(self.c.num_slots - num_forced, self.c.num_ue)
             # Order UEs by delta_risk (descending) but prioritizing lower delta_queue if there is a rare tie
             order = np.lexsort((self.delta_queue, -self.delta_risk))
             # Remove eventually already allocated UEs
             order = order[~np.isin(order, idx_forced)]
-            # Take slot indexing of avaiable slots
-            slot_idx = np.arange(num_forced, self.c.num_slots)
+            # Remaining slots (cap to available slots)
+            remaining_slots = min(self.c.num_slots - num_forced, order.size)
+            # Take slot indexing of available slots
+            slot_idx = np.arange(num_forced, num_forced + remaining_slots)
             # Schedule the remaining nodes (up to the remaining slots)
             mask[slot_idx[:remaining_slots], order[:remaining_slots]] = True
             return mask
@@ -343,14 +343,14 @@ class PebBasedAllocation(ResourceAllocationBase):
             return mask
         else:
             mask[np.arange(num_forced), idx_forced] = True
-            # Remaining slots (cap to num_ue if num_ue < num_slots)
-            remaining_slots = np.minimum(self.c.num_slots - num_forced, self.c.num_ue)
             # Order UEs by delta_risk (descending) but prioritizing lower delta_queue if there is a rare tie
             order = np.lexsort((self.delta_queue, -self.delta_risk))
             # Remove eventually already allocated UEs
             order = order[~np.isin(order, idx_forced)]
-            # Take slot indexing of avaiable slots
-            slot_idx = np.arange(num_forced, self.c.num_slots)
+            # Remaining slots (cap to available slots)
+            remaining_slots = min(self.c.num_slots - num_forced, order.size)
+            # Take slot indexing of available slots
+            slot_idx = np.arange(num_forced, num_forced + remaining_slots)
             # Schedule the remaining nodes (up to the remaining slots)
             mask[slot_idx[:remaining_slots], order[:remaining_slots]] = True
             return mask
