@@ -395,7 +395,7 @@ class SemanticRiskAllocationNoComm(ResourceAllocationBase):
         # General mask
         mask = np.zeros((self.c.num_slots, self.c.num_ue), dtype=bool)
         # Order UEs by delta_risk (descending)
-        order = np.argsort(self.delta_risk, descending=True)
+        order = np.argsort(-self.delta_risk)
         # Take slot indexing of available slots (cap to the no. of UEs)
         num_slots = min(self.c.num_slots, self.c.num_ue)
         # Schedule the nodes
@@ -440,7 +440,7 @@ class PebBasedAllocationNoComm(ResourceAllocationBase):
         # General mask
         mask = np.zeros((self.c.num_slots, self.c.num_ue), dtype=bool)
         # Order UEs by delta_risk (descending)
-        order = np.argsort(self.delta_risk, descending=True)
+        order = np.argsort(-self.delta_risk)
         # Take slot indexing of available slots (cap to the no. of UEs)
         num_slots = min(self.c.num_slots, self.c.num_ue)
         # Schedule the nodes
