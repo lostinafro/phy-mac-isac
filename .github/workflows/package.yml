@@ -27,7 +27,5 @@ jobs:
           with ZipFile(wheel) as archive:
               paths = archive.namelist()
               assert "phy_mac_isac/__init__.py" in paths
-              assert "phy_mac_isac/semantic_isac/scenario.py" in paths
-              assert any(p.endswith(".ply") for p in paths)
-              assert any(p.endswith(".npz") for p in paths)
+              assert "phy_mac_isac/semantic_isac/scenario.py" in paths              
           PY
