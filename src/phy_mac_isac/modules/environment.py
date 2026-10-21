@@ -39,6 +39,7 @@ class SimulationEnvironment:
                  env_dirpath: str = params.DATA_FOLDER,
                  debugging: bool = False,
                  ):
+        # TODO: Missing proper caching of configurations to be sure to load the exact same environment and/or radiomap
         r"""Initializes the simulation environment for a wireless communication scenario.
 
         This method sets up the core parameters for a wireless network simulation, including:
@@ -768,6 +769,27 @@ class SimulationEnvironment:
                     scene_for_rm.add(rt.Transmitter(name=f"ap_{l}",
                                                     position=self.geo.ap_location[l],
                                                     orientation=self.geo.ap_orientation[l].as_euler('zyx')))
+
+                # Set targets/cars
+                if self.c.num_car:
+                    # Start car setup
+                    car_material = rt.ITURadioMaterial("car-material",
+                                                       "metal",
+                                                       thickness=0.01,
+                                                       color=(0.8, 0.1, 0.1))
+                    cars = [rt.SceneObject(fname=rt.scene.low_poly_car, name=f"car_{i}", radio_material=car_material)
+                            for i in range(self.c.num_car)]
+                    scene_for_rm.edit(add=cars)
+
+                # Setting some default scattering coefficients and patterns for the scene
+                if self.c.rays["diffuse_reflection"]:
+                    for material in self.scene.radio_materials.keys():
+                        try:
+                            scene_for_rm.radio_materials[material].scattering_coefficient = params.scattering_coefficient_dict[material]
+                            scene_for_rm.radio_materials[material].scattering_pattern = params.scattering_pattern_dict[material]
+                        except (AttributeError, KeyError):
+                            print(f"Scattering coefficient and pattern not supported for {material}. "
+                                  f"Scattering is disabled for this material.")
 
                 # Compute RadioMap
                 self.rm = self.rm_solver(scene_for_rm,
