@@ -234,7 +234,7 @@ class SimulationEnvironment:
         if self._load_env:
             with np.load(self.env_filename, allow_pickle=True) as data:
                 self.geo.update(np.arange(self.K + 1), **ut.filter_kwargs(self.geo, **data))
-                self.wireless.update(np.arange(self.K), **ut.filter_kwargs(self.wireless, **data))
+                self.wireless.update(np.arange(self.K + 1), **ut.filter_kwargs(self.wireless, **data))
         else:
             # [λ] default half-wavelength spacing else whatever was input
             antenna_spacing = antenna_spacing or 1 / 2
@@ -733,7 +733,7 @@ class SimulationEnvironment:
 
         # Check if a radio map with the same AP position is available
         scene_name = self._scene_name or self._mesh_name.removesuffix(".ply")
-        rm_filename = os.path.join(self.rm_folder, f"{scene_name}_AP{self.c.num_ap}_M{self.c.num_ant}")
+        rm_filename = os.path.join(self.rm_folder, f"{scene_name}")
 
         # Set targets/cars
         if self.c.num_car:
@@ -813,11 +813,11 @@ class SimulationEnvironment:
                 mesh_path = self._build_default_floor_mesh(area_coordinates, mesh_name)  # already cached to disk after first call
                 floor = rt.SceneObject(fname=mesh_path, name="floor", radio_material=floor_material)
                 scene.edit(add=[floor])
-
-                scene.frequency = self.wireless.carrier
-                scene.bandwidth = self.wireless.freqs[-1] - self.wireless.freqs[0]
             else:
                 scene = None
+        if scene is not None:
+            scene.frequency = self.wireless.carrier
+            scene.bandwidth = self.wireless.freqs[-1] - self.wireless.freqs[0]
         return scene, area_coordinates, mesh_name
 
     def _build_default_floor_mesh(self, area_coordinates: list | np.ndarray, filename: str = "") -> str:
