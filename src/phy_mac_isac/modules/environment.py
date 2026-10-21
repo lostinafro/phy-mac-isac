@@ -521,7 +521,7 @@ class SimulationEnvironment:
         # Compute the rotation matrix to align boresight with the direction using the Rodrigues' rotation formula
         # Axis of rotation: cross product of boresight and direction
         axis = np.cross(boresight, direction)
-        axis = axis / np.linalg.norm(axis)  # Normalize
+        axis = axis / np.linalg.norm(axis, axis=1, keepdims=True)  # Normalize
         # Angle of rotation: angle between boresight and direction
         angle = np.arccos(np.clip(direction @ boresight[:, np.newaxis], -1.0, 1.0))
         # Create rotation matrix
@@ -624,9 +624,9 @@ class SimulationEnvironment:
         fo = fo if fo is not None else np.zeros(self.U)
         to = to if to is not None else np.zeros(self.U)
         # Check that to and fo are small enough to have ICI negligible
-        if np.any((fo / self.wireless.sc_spacing) > 0.1):
-            idx = ((fo / self.wireless.sc_spacing) > 0.1).nonzero()
-            ue_list = np.arange(self.U)[idx].tolist()
+        negligible_ici = (fo / self.wireless.sc_spacing) <= 0.1
+        if np.any(~negligible_ici):
+            ue_list = np.flatnonzero(~negligible_ici).tolist()
             print(f"Warning: the ICI is not negligible for UEs in {ue_list}.")
 
         num_time_steps = self.S * self.T
@@ -641,12 +641,12 @@ class SimulationEnvironment:
         h = np.squeeze(h, axis=3) # [L, M, U, S*T, F]
 
         # Apply time and frequency offsets assuming ISI and ICI are negligible
-        # Start by checking the drift of the CTO through time, considering synchronization was made at frame 0.
-        to_in_time = to[:, np.newaxis] *  (self.wireless.sym_index + (self.S * self.T * (self.frame - 1)))  # (U, S*T)
+        # Start by checking the drift of the CTO through time, considering synchronization was made at frame self.frame_sync.
+        to_in_time = to[:, np.newaxis] *  (self.wireless.sym_index + (self.S * self.T * (self.frame - self.frame_sync)))  # (U, S*T)
         # Check if the TO is larger than the CP generating non-negligible ISI in theory
-        if np.any(to_in_time > self.wireless.cp_time):
-            idx = (to_in_time > self.wireless.cp_time).nonzero()
-            ue_list = np.arange(self.U)[idx].tolist()
+        negligible_isi = np.any(to_in_time <= self.wireless.cp_time, axis=1)
+        if np.any(~negligible_isi):
+            ue_list = np.flatnonzero(~negligible_isi).tolist()
             print(f"\tWarning: the ISI is not negligible for UEs in {ue_list}.")
 
         to_over_freqs = to_in_time[:, :, np.newaxis] * self.wireless.freqs[np.newaxis, np.newaxis, :]   # (U, S*T, F)
@@ -1021,7 +1021,7 @@ if __name__ == "__main__":
     num_ue = 12
     avg_datasize, queue_max = params.arrival_rate_init(avg_se=2, num_ue=num_ue)
     env_args = {"debugging": True, "num_frames": 50, "num_ue": num_ue, "traffic_avg": avg_datasize,
-                "queue_max": queue_max, "sweep_value": 32, "ue_vel_mean": 5}
+                "queue_max": queue_max, "num_rgions": 32, "ue_vel_mean": 5}
     step_args = {"cfo": False}
     res = run_episode(1, ra.RoundRobinAllocation, env_kwargs=env_args, step_kwargs=step_args)
     print(res)
