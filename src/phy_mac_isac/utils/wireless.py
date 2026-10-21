@@ -1,10 +1,6 @@
 # Wireless: path loss, fading, noise, and network-node placement/mobility
 import numpy as np
 from scipy.constants import speed_of_light
-from scipy.stats import rice, norm
-
-# The supported channel types are the following.
-channel_types = {'LoS', 'No', 'AWGN', 'Rayleigh', 'Rice', 'Shadowing'}
 
 
 def ue_ap_distances(ue_position: np.ndarray, ap_position: np.ndarray) -> np.ndarray:
@@ -49,47 +45,13 @@ def eval_path_loss(carrier_freq: float, pl_exponent: float, gain: float | np.nda
     try:
         output = np.zeros(distance.shape)
         output[distance > 0] = (20 * np.log10(4 * np.pi * carrier_freq / speed_of_light) - gain[distance > 0] + 10 * pl_exponent * np.log10(distance[distance > 0]) + 10 * (2 - pl_exponent) * np.log10(ref_distance)).flatten()
-        output[distance == 0] = np.infty
+        output[distance == 0] = np.inf
         return output
     except AttributeError:
         if distance == 0:
-            return np.infty
+            return np.inf
         else:
             return  20 * np.log10(4 * np.pi * carrier_freq / speed_of_light) - gain + 10 * pl_exponent * np.log10(distance) + 10 * (2 - pl_exponent) * np.log10(ref_distance)
-
-
-def fading(typ: str, dim: tuple = (1,),
-           shape: float = 6, seed: int = None) -> np.ndarray:
-    """Create a sampled fading channel from a given distribution and given
-    dimension.
-
-    Parameters
-    __________
-    typ : str in channel_types,
-        type of the fading channel to be used.
-    dim : tuple,
-        dimension of the resulting array.
-    shape : float [dB],
-        shape parameters used in the rice distribution modeling the power of
-        the LOS respect to the NLOS rays.
-    seed : int,
-        seed used in the random number generator to provide the same arrays if
-        the same is used.
-    """
-
-    if typ not in channel_types:
-        raise ValueError(f'Type can only be in {channel_types}')
-    elif typ == 'AWGN' or typ == 'LoS':
-        return np.ones(dim)
-    elif typ == 'No':
-        return np.zeros(dim)
-    elif typ == "Rayleigh":
-        vec = norm.rvs(size=2 * np.prod(dim), random_state=seed)
-        return (vec[0:1] + 1j * vec[1:2]).reshape(dim) / np.sqrt(2)  # TODO FIXING THIS BUG
-    elif typ == "Rice":
-        return rice.rvs(10 ** (shape / 10), size=np.prod(dim), random_state=seed).reshape(dim)  # TODO: FIX ALSO THIS
-    elif typ == "Shadowing":
-        return norm.rvs(scale=10 ** (shape / 10), random_state=seed)
 
 
 # Physical noise
@@ -129,7 +91,7 @@ def move_ues(ue_pos,
              v_max: float,
              time_frame: float,
              side: float,
-             rng: np.random.RandomState = np.random.default_rng(42)) -> np.ndarray:
+             rng: np.random.Generator = np.random.default_rng(42)) -> np.ndarray:
     num_ue = ue_pos.shape[0]
     # Generate user angle of trajectory
     angle = rng.uniform(0, 2 * np.pi, (num_ue, 1))

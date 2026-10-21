@@ -59,25 +59,6 @@ def check_data(data_shape: tuple, prefix: str, folder: str, overwrite_flag: bool
     return results, filename
 
 
-## Folder management
-uppath = lambda _path, n: os.sep.join(_path.split(os.sep)[:-n])
-
-
-def standard_output_dir(subdirname: str) -> str:
-    basedir = os.path.join(os.path.expanduser('~'), 'OneDrive/plots')
-    if not os.path.exists(basedir):
-        basedir = os.path.join(uppath(__file__, 2), 'plots')
-        if not os.path.exists(basedir):
-            os.mkdir(basedir)
-    subdir = os.path.join(basedir, subdirname)
-    if not os.path.exists(subdir):
-        os.mkdir(subdir)
-    output_dir = os.path.join(subdir, str(date.today()))
-    if not os.path.exists(output_dir):
-        os.mkdir(output_dir)
-    return output_dir
-
-
 ## Progress bars
 def std_progressbar(total_iteration, **kwargs):
     return tqdm(total_iteration, file=sys.stdout, leave=False, ascii=True, **kwargs)
