@@ -107,7 +107,7 @@ def _profile_vram_worker(connection,
                 for process in processes:
                     if process.pid == pid:
                         used = process.usedGpuMemory
-                        if used == nvml.NVML_VALUE_NOT_AVAILABLE:
+                        if used is None:
                             raise RuntimeError("NVML cannot report this process's GPU memory")
                         peak_bytes[0] = max(peak_bytes[0], used)
 
