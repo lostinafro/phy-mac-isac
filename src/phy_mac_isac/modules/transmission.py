@@ -143,7 +143,7 @@ class SEuplinkOFDMpostMRC(TransmissionBase):
         # Compile the core method if possible (Eager mode was find slightly faster)
         if compiled_core:
             compile_mode = "reduce-overhead" if self.device.type == "cuda" else "default"
-            self._compiled_core = torch.compile(self._core, mode=compile_mode)
+            self._run_core = torch.compile(self._core, mode=compile_mode)
 
     def _core(self, h: torch.Tensor, tx_power: torch.Tensor, no: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         """All-tensor hot path -- this is the part that gets compiled in CUDA."""
