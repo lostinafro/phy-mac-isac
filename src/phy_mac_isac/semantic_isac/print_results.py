@@ -5,9 +5,12 @@ import numpy as np
 import pandas as pd
 from scipy import stats
 import matplotlib.pyplot as plt
+from argparse import ArgumentParser
+from pathlib import Path
+
 
 from ..modules.resource_allocation import available_methods
-from . import parameters as p
+from . import parameters as semantic_params
 from .simulate_vs_ue import num_ue_vec
 from .simulate_vs_regions import num_regions_vec
 
@@ -170,6 +173,18 @@ def plot_cdfs(num_tests: list | np.ndarray,
 latex_look(plt)
 cm = 1 / 2.54
 
+def parsing():
+    parser = ArgumentParser()
+    parser.add_argument("--data", required=True, help="Experiment directory containing the saved results.")
+    args = parser.parse_args()
+
+    data_dirpath = Path(os.path.expanduser(os.path.expandvars(args.data))).resolve()
+
+    if not data_dirpath.is_dir():
+        parser.error(f"Results directory does not exist: {data_dirpath}")
+
+    return str(data_dirpath)
+
 
 if __name__ == "__main__":
     # Define colors and markers for each RA method
@@ -181,7 +196,7 @@ if __name__ == "__main__":
     metrics = ["queue", "se_achievable", "se_set", "misclassification", "risk_hat"]
 
     # Other parameters
-    data_path = os.path.join(os.path.expanduser("~"), "OneDrive/data/semantic_isac/2026-09-21/")
+    data_path = parsing()
 
     stats_list = ["mean", "90-percentile", "95-percentile", "99-percentile"]
 
@@ -193,7 +208,7 @@ if __name__ == "__main__":
         var = name[-1]
         print(f"-- Name {name} - Variable {var} --")
         stat, cdfs = compute_statistics(trial, data_path, ra_labels, metrics, stats_list,
-                                        num_episodes=p.NUM_EP, suffix=name)
+                                        num_episodes=semantic_params.NUM_EP, suffix=name)
 
         # print_avg_perc becomes a trivial lookup now -- no recomputation needed
         for metric in metrics:
@@ -209,8 +224,8 @@ if __name__ == "__main__":
                 df[f"{method}_90"] = row[:, 1]
                 df[f"{method}_95"] = row[:, 2]
                 df[f"{method}_99"] = row[:, 3]
-            # Saving
 
+            # Saving
             df.insert(0, var, np.asarray(trial))
             df.to_csv(os.path.join(data_path, f"{metric}_vs_{var}.csv"), index=False)
 
