@@ -354,13 +354,32 @@ def run_episode(episode: int,
     env_kwargs = env_kwargs or {}
     step_kwargs = step_kwargs or {}
 
-    # --- Build environment ---
-    sha_kwargs = ut.filter_kwargs(params.SharedParams, **env_kwargs)
-    wir_kwargs = ut.filter_kwargs(params.WirelessParams, **env_kwargs)
-    ini_kwargs = ut.filter_kwargs(SimulationEnvironment, **env_kwargs)
-    env = SemanticISACScenario(episode, sha_kwargs, wir_kwargs, env_dirpath=save_dirpath, **ini_kwargs)
+    # Validate the complete argument dictionary before routing it to each stage.
+    # Dataclass types come from the selected scenario so subclass fields are supported.
+    ut.validate_kwargs(
+        env_kwargs,
+        SemanticISACScenario.shared_type,
+        SemanticISACScenario.wireless_type,
+        SimulationEnvironment,
+        SemanticISACScenario.setup_scenario,
+        exclude={"self", "episode", "shared_params", "wireless_params", "c"},
+        name="env_kwargs",
+    )
+    ut.validate_kwargs(
+        step_kwargs,
+        SemanticISACScenario.step,
+        exclude={"self"},
+        name="step_kwargs",
+    )
 
-    set_kwargs = ut.filter_kwargs(env.setup_scenario, **env_kwargs)
+    # --- Build environment ---
+    sha_kwargs = ut.filter_call_kwargs(SemanticISACScenario.shared_type, **env_kwargs)
+    wir_kwargs = ut.filter_call_kwargs(SemanticISACScenario.wireless_type, **env_kwargs)
+    ini_kwargs = ut.filter_call_kwargs(SimulationEnvironment, **env_kwargs)
+    ini_kwargs.setdefault("env_dirpath", save_dirpath)
+    env = SemanticISACScenario(episode, sha_kwargs, wir_kwargs, **ini_kwargs)
+
+    set_kwargs = ut.filter_call_kwargs(env.setup_scenario, **env_kwargs)
     env.setup_scenario(**set_kwargs)
 
     # --- Build and wire up modules ---

@@ -106,10 +106,10 @@ class SimulationEnvironment:
             area_coordinates = self._base_area_coordinates
         # Create semantic regions as MultiPolygon from boundaries if provided, else split the polygon almost equally
         if boundaries is None:
-            # Default is splitting the area in self.c.sweep_value equal regions (see __post_init__ in GeometryParams)
+            # Split the area into self.c.num_regions semantic regions.
             semantic_regions = ut.split_polygon_voronoi(polygon=env_polygon, n=self.c.num_regions, rng=self.rng)
         else:
-            assert boundaries.shape[0] == self.c.num_regions, "boundaries must comprises as many regions as sweep_value"
+            assert boundaries.shape[0] == self.c.num_regions, "boundaries must contain num_regions regions"
             semantic_regions = sha.MultiPolygon([sha.Polygon(boundaries[i]) for i in range(self.c.num_regions)])
 
         # Initialize geometrical shape
@@ -978,13 +978,32 @@ def run_episode(episode: int,
     env_kwargs = env_kwargs or {}
     step_kwargs = step_kwargs or {}
 
-    # --- Build environment ---
-    sha_kwargs = ut.filter_kwargs(params.SharedParams, **env_kwargs)
-    wir_kwargs = ut.filter_kwargs(params.WirelessParams, **env_kwargs)
-    ini_kwargs = ut.filter_kwargs(SimulationEnvironment, **env_kwargs)
-    env = SimulationEnvironment(episode, sha_kwargs, wir_kwargs, env_dirpath=save_dirpath, **ini_kwargs)
+    # Validate the complete argument dictionary before routing it to each stage.
+    # Dataclass types come from the selected scenario so subclass fields are supported.
+    ut.validate_kwargs(
+        env_kwargs,
+        SimulationEnvironment.shared_type,
+        SimulationEnvironment.wireless_type,
+        SimulationEnvironment,
+        SimulationEnvironment.setup_scenario,
+        exclude={"self", "episode", "shared_params", "wireless_params", "c"},
+        name="env_kwargs",
+    )
+    ut.validate_kwargs(
+        step_kwargs,
+        SimulationEnvironment.step,
+        exclude={"self"},
+        name="step_kwargs",
+    )
 
-    set_kwargs = ut.filter_kwargs(env.setup_scenario, **env_kwargs)
+    # --- Build environment ---
+    sha_kwargs = ut.filter_call_kwargs(SimulationEnvironment.shared_type, **env_kwargs)
+    wir_kwargs = ut.filter_call_kwargs(SimulationEnvironment.wireless_type, **env_kwargs)
+    ini_kwargs = ut.filter_call_kwargs(SimulationEnvironment, **env_kwargs)
+    ini_kwargs.setdefault("env_dirpath", save_dirpath)
+    env = SimulationEnvironment(episode, sha_kwargs, wir_kwargs, **ini_kwargs)
+
+    set_kwargs = ut.filter_call_kwargs(env.setup_scenario, **env_kwargs)
     env.setup_scenario(**set_kwargs)
 
     # --- Build and wire up modules ---
