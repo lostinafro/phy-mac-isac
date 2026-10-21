@@ -7,7 +7,7 @@ name = "phy-mac-isac"
 version = "0.0.2"
 description = "Physical and MAC layer simulation tools for integrated sensing and communications"
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 license = "MIT"
 license-files = ["LICENSE"]
 authors = [{name = "Fabio Saggese"}]
@@ -19,20 +19,21 @@ classifiers = [
     "Topic :: Scientific/Engineering",
 ]
 dependencies = [
-    "filelock",
-    "GPUtil",
-    "matplotlib",
-    "mitsuba",
-    "numpy>=2.5.0",
-    "nvidia-ml-py",
-    "pandas",
-    "rtree",
-    "scipy",
-    "shapely",
+    "filelock>=3.13.0",
+    "GPUtil>=1.4.0",
+    "matplotlib>=3.10.8",
+    "mitsuba>=3.7.1",
+    "numpy>=2.2.6",
+    "nvidia-ml-py>=12.535.108",
+    "pandas>=2.2.2",
+    "rtree>=1.2.0",
+    "scipy>=1.15.3",
+    "shapely>=2.0.6",
     "sionna>=2.0.0",
-    "torch",
-    "tqdm",
-    "trimesh",
+    "sionna-rt>=2.0.0",
+    "torch>=2.9.1",
+    "tqdm>=4.66.1",
+    "trimesh>=4.4.0",
 ]
 
 [project.urls]
