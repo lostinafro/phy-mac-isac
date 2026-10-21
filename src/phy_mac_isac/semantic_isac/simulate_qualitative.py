@@ -36,9 +36,10 @@ if __name__ == "__main__":
 
     # Compute datasize and queue_max
     # Check maximum load for non-trivial/non_explosive queues
+    num_slots = 1
     num_scs = 60
     bw = num_scs * 2 ** semantic_params.NUMEROLOGY * 15e3
-    avg_datasize, queue_max = semantic_params.arrival_rate_init(avg_se=2, num_ue=num_ue_vec, bw=bw)
+    avg_datasize, queue_max = semantic_params.arrival_rate_init(avg_se=2, num_ue=num_ue_vec, bw=bw, num_slots=num_slots)
     scale = 3
 
     # Set the area and the regions
@@ -97,8 +98,8 @@ if __name__ == "__main__":
                         print(f"\tWarning: couldn't reuse cached episode {ep} ({out_path}): {e} -- re-running it.")
                 episode_kwargs.append(dict(episode=ep, ra_method=ra_method,
                                            env_kwargs={"num_ue": int(sweep_value),
-                                                       "num_slots": 1,
-                                                       "sweep_value": len(regions),
+                                                       "num_slots": num_slots,
+                                                       "num_regions": len(regions),
                                                        "num_scs": num_scs,
                                                        "num_ap": len(ap_location),
                                                        "debugging": True,
