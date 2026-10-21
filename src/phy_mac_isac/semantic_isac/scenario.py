@@ -202,6 +202,10 @@ class SemanticISACScenario(SimulationEnvironment):
             # Print starts
             print(f"----------------------- FRAME {self.frame:03d} -------------------------")
 
+            # Check feasibility of the current allocation
+            if np.any(np.sum(ue_slot_map, axis=-1) > 1):
+                print("--- !!! --- Allocation is not OMA --- !!! ---")
+
             # UE movement
             for u in range(min(10, self.U)):
                 msg1 = [f"{float(a):.2f}" for a in self.geo.ue_location[frame_range[0], u]]
@@ -294,14 +298,6 @@ class SemanticISACScenario(SimulationEnvironment):
             self.env_fig.savefig(filename, dpi=300)
 
             print("----------------------- END FRAME -------------------------\n")
-
-        # Check feasibility of the current allocation
-        if np.any(np.sum(ue_slot_map, axis=-1) > 1):
-            # print("Allocation is not OMA")
-            return False
-        if np.any(queue > self.wireless.queue_max):
-            # print("Queue is exceeding its maximum for at least one UE")
-            return False
         return True
 
 
