@@ -28,6 +28,8 @@ For PyCharm Run/Debug, select the virtual environment where the package is insta
 
 ## Experiment entry points
 
+(Copied from the [semantic_isac submodule](src/phy_mac_isac/semantic_isac/README.md))
+
 | Module under `phy_mac_isac.semantic_isac` | Current experiment |
 | --- | --- |
 | `simulate_vs_ue` | UE counts 6, 12, 18, 27, and 36; `NUM_EP` episodes per value and method |

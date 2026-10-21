@@ -1,12 +1,16 @@
 # phy-mac-isac
 
 Research software for physical and MAC layer integrated sensing and communications (ISAC) simulations using Sionna.
+This software is made under the under the Marie Skłodowska-Curie Action Postdoctoral fellowship 
+project [SCOPES](https://cordis.europa.eu/project/id/101204088) with grant agreement No. 101204088. 
 
 The distribution name is `phy-mac-isac`; the Python import name is `phy_mac_isac`. Reusable models live in `phy_mac_isac.modules`, shared helpers in `phy_mac_isac.utils`, and semantic ISAC experiments in `phy_mac_isac.semantic_isac`.
+Each subdirectory within ``src`` represents a scientific project, and it contains a README file with specifications on the experiment, 
+and on the submitted and published scientific papers, if any.
 
 ## Install
 
-Use **Python 3.11 or newer**. From a checkout of the `develop` branch:
+Use **Python 3.11 or newer**. From a checkout of the `main` branch:
 
 ```bash
 python -m venv .venv
@@ -15,15 +19,9 @@ python -m pip install --upgrade pip
 python -m pip install -e .
 ```
 
-For build and distribution checks, install the development extra:
-
-```bash
-python -m pip install -e ".[dev]"
-```
-
 Runtime requirements and their declared minimum versions are listed in [pyproject.toml](pyproject.toml). CUDA execution needs a compatible NVIDIA driver and a CUDA-enabled PyTorch installation. CPU runs still use the package's Sionna, Mitsuba, and spatial-index dependencies.
 
-## Run an experiment
+## Example of experiment run
 
 Run experiment files as **Python modules** so package-relative imports resolve:
 
