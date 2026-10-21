@@ -1,63 +1,70 @@
-# Sionna for ISAC
+# phy-mac-isac
 
-This repository contains the source code for the Integrated Sensing and Communication (ISAC) Simulation using Sionna. Below is a detailed description of the files and their contents:
+Research software for physical and MAC layer integrated sensing and communications (ISAC) simulations using Sionna.
+This software is made under the under the Marie Skłodowska-Curie Action Postdoctoral fellowship 
+project [SCOPES](https://cordis.europa.eu/project/id/101204088) with grant agreement No. 101204088. 
 
-## 1. utils: Utility Python Files
+The distribution name is `phy-mac-isac`; the Python import name is `phy_mac_isac`. Reusable models live in `phy_mac_isac.modules`, shared helpers in `phy_mac_isac.utils`, and semantic ISAC experiments in `phy_mac_isac.semantic_isac`.
+Each subdirectory within ``src`` represents a scientific project, and it contains a README file with specifications on the experiment, 
+and on the submitted and published scientific papers, if any.
 
-- **`channel.py`**: Contains the `ChannelComputation` class, which manages and computes channel characteristics, applies noise, and handles saving and loading of channel data.
-- **`paths.py`**: Contains the `PathComputation` class, which computes and processes path information for a given scene, including Doppler shifts and delays, and applies thresholds to path data.
-- **`rg.py`**: Contains the `ResourceGridSetup` class, which configures and provides access to a resource grid for OFDM systems, including its subcarrier frequencies.
-- **`scenariosetup.py`**: Contains the `ScenarioSetup` class, which sets up a vehicular simulation scenario by generating vehicle data, configuring a simulation scene, and managing vehicle positions and velocities.
-- **`xml.py`**: Contains the `XMLModifier` class, which modifies XML files to add new elements based on a template and provides methods for proper XML formatting and saving.
+## Install
 
-## 2. scene: Scene Files
+Use **Python 3.11 or newer**. From a checkout of the `main` branch:
 
-- **`scene.xml`**: The original single-car template scene used as a reference for adding other cars.
-- **`mod_scene.xml`**: A modified scenario with the required number of cars, based on the original reference.
-- **`mod_scene.csv`**: Contains information about the positions and velocity vectors of cars.
-- **`dop_gt.npy`**: Contains ground truth data for Doppler shifts and delays in the scenario.
-- **`chl_gt.npy`**: Contains the ground truth OFDM channel data for the scenario.
-- **`meshes/`**: Folder containing mesh files (PLY files) for various objects like buildings, floor, and cars.
+```bash
+python -m venv .venv
+source .venv/bin/activate
+python -m pip install --upgrade pip
+python -m pip install -e .
+```
 
-## 3. analysis.ipynb
+Runtime requirements and their declared minimum versions are listed in [pyproject.toml](pyproject.toml). CUDA execution needs a compatible NVIDIA driver and a CUDA-enabled PyTorch installation. CPU runs still use the package's Sionna, Mitsuba, and spatial-index dependencies.
 
-A Jupyter Notebook containing code used to analyze the effect of different types of paths and mobility on the channel.
+## Example of experiment run
 
-## 4. og.ipynb
+Run experiment files as **Python modules** so package-relative imports resolve:
 
-A Jupyter Notebook containing nearly all the core code initially used to make the base version of the simulation work.
+```bash
+python -m phy_mac_isac.semantic_isac.simulate_vs_ue --help
+python -m phy_mac_isac.semantic_isac.simulate_vs_regions --help
+python -m phy_mac_isac.semantic_isac.simulate_qualitative --help
+```
 
-## 5. modifyxml.py
+For a sequential CPU run using the round-robin method:
 
-A Python script that generates a new modified scenario with the required number of cars when executed.
+```bash
+python -m phy_mac_isac.semantic_isac.simulate_vs_ue \
+  --cpu --ra_method MAF --savesubdir trial
+```
 
-## 6. scenario_gt.py
+The sweep scripts use logical `cuda:0` unless `--cpu` is supplied. Add `--parallel` to run episodes in spawned worker processes. Omitting `--ra_method` runs all allocation methods.
 
-A Python script to initialize the scene, position the objects in the scenario, perform ground truth analysis to find the true channel, Doppler shift, and delay, and save them as NumPy files.
+The two quantitative sweeps currently use **100 episodes per sweep value and method**, with 100 frames per episode. The qualitative script uses one episode per sweep value and enables debug figures. Review [the experiment configuration](src/phy_mac_isac/semantic_isac/parameters.py) and each script's sweep settings before launching a full experiment.
 
-## 7. values.py
+## Results and generated assets
 
-A global variables file used to set all parameters in the simulation. Changes in this file affect parameters for all the scripts.
+By default, results are written outside the checkout:
 
-## Resources
+```text
+~/.local/share/phy_mac_isac/data/<YYYY-MM-DD>/<savesubdir>/
+```
 
-Here are some useful resources for the Integrated Sensing and Communication (ISAC) Simulation using Sionna:
+Set `PHY_MAC_ISAC_DATA_DIR` before starting Python to choose another root:
 
-1. **Information on Scattering Coefficients of Materials**:
-   - [Absorption Coefficient Chart](https://www.acoustic-supplies.com/absorption-coefficient-chart/)
+```bash
+export PHY_MAC_ISAC_DATA_DIR="$HOME/OneDrive/data/semantic_isac"
+```
 
-2. **Sionna Tutorials**:
-   - [Sionna Tutorials](https://nvlabs.github.io/sionna/tutorials.html)
+Generated floor meshes and semantic ISAC radio maps default to `~/.cache/phy_mac_isac/meshes` and `~/.cache/phy_mac_isac/semantic_isac/rm`. XDG directory overrides and package-specific overrides are described in [the usage guide](docs/usage.md#directories-and-environment-variables). These generated files are created at runtime; the current repository contains no bundled scene meshes or radio-map archives.
 
-3. **Discussions on Sionna GitHub**:
-   - [Discussion 450](https://github.com/NVlabs/sionna/discussions/450)
-   - [Discussion 475](https://github.com/NVlabs/sionna/discussions/475)
-   - [Discussion 516](https://github.com/NVlabs/sionna/discussions/516)
-   - [Discussion 523](https://github.com/NVlabs/sionna/discussions/523)
+To summarize quantitative sweep results and save plots, pass the experiment directory:
 
-4. **Frequency Dependence of Scattering Coefficients**:
-   - R. Luebbers, D. Steich and K. Kunz, "FDTD calculation of scattering from frequency-dependent materials," in IEEE Transactions on Antennas and Propagation, vol. 41, no. 9, pp. 1249-1257, Sept. 1993, doi: 10.1109/8.247751.
-   - Keywords: Finite difference methods, Time domain analysis, Scattering, Frequency, Magnetic materials, Convolution, Magnetic confinement, Plasma confinement, Permittivity, Anisotropic magnetoresistance
+```bash
+python -m phy_mac_isac.semantic_isac.print_results \
+  --data "$PHY_MAC_ISAC_DATA_DIR/2026-10-21/trial"
+```
 
-5. **Weekly Updates Presentations (combined)**:
-   - [Google Slides Presentation](https://docs.google.com/presentation/d/1ExG5S0luL7W-TqLdqEjusiJEiLuzWcYruyqAF-UmW-k/edit?usp=sharing)
+Replace the date and subdirectory with those of your run. Plot rendering currently uses LaTeX, so a working LaTeX installation is required unless `latex_look()` is changed.
+
+See [the usage guide](docs/usage.md) for CLI options, device selection, configuration, output layout, and VRAM profiling. Development checks are documented in [CONTRIBUTING.md](CONTRIBUTING.md). The project is available under the [MIT License](LICENSE).

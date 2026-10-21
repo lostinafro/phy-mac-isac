@@ -1,0 +1,32 @@
+name: Package
+
+on:
+  push:
+    branches: [develop]
+  pull_request:
+    branches: [develop]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: python -m pip install --upgrade build twine
+      - run: python -m compileall -q src/phy_mac_isac
+      - run: python -m unittest discover -s tests -v
+      - run: python -m build
+      - run: python -m twine check dist/*
+      - name: Check wheel layout and data
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          from zipfile import ZipFile
+          wheel, = Path("dist").glob("*.whl")
+          with ZipFile(wheel) as archive:
+              paths = archive.namelist()
+              assert "phy_mac_isac/__init__.py" in paths
+              assert "phy_mac_isac/semantic_isac/scenario.py" in paths              
+          PY
