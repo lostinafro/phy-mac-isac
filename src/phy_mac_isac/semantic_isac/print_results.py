@@ -175,7 +175,7 @@ if __name__ == "__main__":
     # Define colors and markers for each RA method
     ra_labels = sorted(list(available_methods.keys()))
     colors = dict(zip(ra_labels, ["#ff0000", "#fa8775", "#cd34b5", "#0000ff", "#ffd700", "#ffb14e"]))
-    markers = dict(zip(available_methods.keys(), ["o", "s", "D", "semantic_params", "X", "v"]))
+    markers = dict(zip(available_methods.keys(), ["o", "s", "D", "p", "X", "v"]))
 
     # Setting the results for stat and cdf computation
     metrics = ["queue", "se_achievable", "se_set", "misclassification", "risk_hat"]
