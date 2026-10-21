@@ -39,15 +39,6 @@ QUEUE_RELIABILITY = 0.95         # 1 - epsilon in the paper
 UE_POW = ut.dbm2watt(0)
 AP_POW = ut.dbm2watt(23)
 
-# DEFAULT FOLDERS
-PACKAGE_ROOT = Path(__file__).resolve().parents[1]
-
-SCENE_FOLDER = os.environ.get("PHY_MAC_ISAC_SCENE_DIR", str(PACKAGE_ROOT / "scenes"))
-DATA_FOLDER = os.environ.get("PHY_MAC_ISAC_DATA_DIR", str(PACKAGE_ROOT / "data"))
-
-_DEFAULT_CACHE_ROOT = (Path(os.environ.get("XDG_CACHE_HOME", str(Path.home() / ".cache"))) / "phy_mac_isac")
-CACHE_FOLDER =  os.path.expanduser(os.environ.get("PHY_MAC_ISAC_CACHE_DIR", str(_DEFAULT_CACHE_ROOT)))
-
 # RayTracer and RadioMap parameters
 RT_PARAM = {
     "max_depth": 3,
@@ -81,6 +72,24 @@ scattering_pattern_dict = {
     "metal": DirectivePattern(1),
     "wood": LambertianPattern()
 }
+
+
+# DEFAULT FOLDERS
+def _directory_from_env(name: str, default: str | Path) -> str:
+    """Return an absolute directory, expanding environment variables and ~."""
+    value = os.environ.get(name) or str(default)
+    expanded = os.path.expanduser(os.path.expandvars(value))
+    return str(Path(expanded).resolve())
+
+
+PACKAGE_ROOT = Path(__file__).resolve().parents[1]
+
+_DATA_HOME = Path(_directory_from_env("XDG_DATA_HOME", Path.home() / ".local" / "share"))
+_CACHE_HOME = Path(_directory_from_env("XDG_CACHE_HOME", Path.home() / ".cache"))
+
+SCENE_FOLDER = _directory_from_env("PHY_MAC_ISAC_SCENE_DIR", PACKAGE_ROOT / "scenes")
+DATA_FOLDER = _directory_from_env("PHY_MAC_ISAC_DATA_DIR", _DATA_HOME / "phy_mac_isac" / "data")
+CACHE_FOLDER = _directory_from_env("PHY_MAC_ISAC_CACHE_DIR", _CACHE_HOME / "phy_mac_isac")
 
 
 ## CLASSES
