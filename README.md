@@ -2,7 +2,7 @@
 
 Research software for physical and MAC layer integrated sensing and communications (ISAC) simulations using [Sionna](https://github.com/NVlabs/sionna).
 This software is made under the under the Marie Skłodowska-Curie Action Postdoctoral Fellowship 
-project [SCOPES](https://cordis.europa.eu/project/id/101204088) with grant agreement No. 101204088. 
+project [SCOPES](https://cordis.europa.eu/project/id/101204088) with grant agreement no. 101204088. 
 
 The distribution name is `phy-mac-isac`; the Python import name is `phy_mac_isac`. Reusable models live in `phy_mac_isac.modules`, shared helpers in `phy_mac_isac.utils`, and semantic ISAC experiments in `phy_mac_isac.semantic_isac`.
 Each subdirectory within ``src`` represents a scientific project, and it contains a README file with specifications on the experiment, 
