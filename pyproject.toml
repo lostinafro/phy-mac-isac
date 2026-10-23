@@ -38,7 +38,7 @@ dependencies = [
 
 [project.urls]
 Repository = "https://github.com/lostinafro/phy-mac-isac"
-Documentation = "https://github.com/lostinafro/phy-mac-isac/blob/develop/docs/usage.md"
+Documentation = "https://github.com/lostinafro/phy-mac-isac/docs/usage.md"
 Issues = "https://github.com/lostinafro/phy-mac-isac/issues"
 
 [project.optional-dependencies]
