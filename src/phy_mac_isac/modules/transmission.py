@@ -171,7 +171,7 @@ class SEuplinkOFDMpostMRC(TransmissionBase):
 
         return sinr, se
 
-
+    @torch.no_grad()
     def __call__(self, channel: np.ndarray, tx_power: np.ndarray | float | None = None,
                  no: float | None = None, **kwargs) -> tuple:
         """Estimate per-(slot, UE) SINR and spectral efficiency, skipping bit-level encoding.
@@ -197,3 +197,112 @@ class SEuplinkOFDMpostMRC(TransmissionBase):
         # Call the core method
         sinr, se = self._run_core(h, tx_power_t, no_t)
         return sinr.cpu().numpy(), se.cpu().numpy()
+
+
+@dataclass(frozen=True)
+class SisoTransmissionResult:
+    """Compact slot results; every vector has shape [S]. SINR is [S,T,F,1,1]."""
+
+    sinr: torch.Tensor
+    mcs_index: torch.Tensor
+    decoded_bits: torch.Tensor
+    harq_feedback: torch.Tensor
+    sinr_eff: torch.Tensor
+    tbler: torch.Tensor
+    bler: torch.Tensor
+
+    @property
+    def decoded(self) -> torch.Tensor:
+        return self.harq_feedback == 1
+
+
+class SisoPhyAbstraction(TransmissionBase):
+    """One SYS transport block per independent SISO slot.
+
+    Uses perfect channel knowledge and no cochannel interference, hence
+    SINR = P_RE * |h|**2 / noise_power_per_subcarrier. This bypasses waveform
+    decoding; SYS samples ACK/NACK from the predicted transport BLER.
+    ILLA selects MCS from the same instantaneous channel (ideal feedback).
+    Reserved REs are masked to zero and excluded from transport-block sizing.
+    """
+
+    def __init__(self, resource_grid, device: torch.device | str = "cpu", *,
+                 bler_target: float = 0.1, direction: str = "uplink",
+                 mcs_table_index: int = 1, data_mask=None):
+        from sionna.sys import PHYAbstraction, InnerLoopLinkAdaptation
+
+        if direction not in ("uplink", "downlink"):
+            raise ValueError("direction must be 'uplink' or 'downlink'")
+        valid_tables = (1, 2) if direction == "uplink" else (1, 2, 3, 4)
+        if mcs_table_index not in valid_tables:
+            raise ValueError(f"Invalid MCS table for {direction}: {mcs_table_index}")
+        if not 0 < bler_target < 1:
+            raise ValueError("bler_target must lie strictly between 0 and 1")
+        if resource_grid.num_tx != 1 or resource_grid.num_streams_per_tx != 1:
+            raise ValueError("The resource grid must have one transmitter and stream")
+        self.device = torch.device(device)
+        self.resource_grid = resource_grid
+        self.mcs_table_index = mcs_table_index
+        self.mcs_category = int(direction == "downlink")
+        shape = (resource_grid.num_ofdm_symbols, resource_grid.fft_size)
+        # ResourceGrid type 0 identifies data (1 pilots, 2 guard, 3 DC).
+        if data_mask is None:
+            data_mask = resource_grid.build_type_grid()[0, 0] == 0
+        self.data_mask = torch.as_tensor(data_mask, dtype=torch.bool, device=self.device)
+        if tuple(self.data_mask.shape) != shape or not self.data_mask.any():
+            raise ValueError(f"data_mask must have shape {shape} and contain data REs")
+        self.phy_abstraction = PHYAbstraction(device=str(self.device))
+        self.illa = InnerLoopLinkAdaptation(
+            self.phy_abstraction, bler_target=bler_target, device=str(self.device))
+
+    @torch.no_grad()
+    def __call__(self, channel, tx_power=1.0, no=1.0) -> SisoTransmissionResult:
+        """Accept [S,1,1,1,1,T,F]; tx_power/no are linear powers per RE.
+
+        Both powers accept a scalar or an [S] vector. ``no`` is noise power
+        over one subcarrier, not noise PSD or total bandwidth noise.
+        """
+        h = torch.as_tensor(channel, device=self.device)
+        expected = (1, 1, 1, 1, self.resource_grid.num_ofdm_symbols,
+                    self.resource_grid.fft_size)
+        if h.ndim != 7 or tuple(h.shape[1:]) != expected:
+            raise ValueError(f"channel must have shape [S,{','.join(map(str, expected))}]")
+        if not torch.is_complex(h) or not torch.isfinite(h).all():
+            raise ValueError("channel must contain finite complex coefficients")
+        slots = h.shape[0]
+        powers = []
+        for name, value, strictly_positive in (("tx_power", tx_power, False), ("no", no, True)):
+            tensor = torch.as_tensor(value, dtype=h.real.dtype, device=self.device)
+            if tensor.ndim > 1 or (tensor.ndim == 1 and tensor.shape[0] != slots):
+                raise ValueError(f"{name} must be a scalar or a vector of length S")
+            if not torch.isfinite(tensor).all() or (tensor < 0).any() or (
+                    strictly_positive and (tensor == 0).any()):
+                raise ValueError(f"{name} must be finite and {'positive' if strictly_positive else 'nonnegative'}")
+            powers.append(torch.broadcast_to(tensor, (slots,)))
+        power, noise = powers
+        gain = h[:, 0, 0, 0, 0].abs().square()
+        sinr = gain * (power / noise)[:, None, None]
+        sinr = torch.where(self.data_mask, sinr, 0)[..., None, None]
+        if not torch.isfinite(sinr).all():
+            raise ValueError("SINR overflow: check channel and power scaling")
+        if slots == 0:
+            integer = torch.empty(0, dtype=torch.int32, device=self.device)
+            real = torch.empty(0, dtype=h.real.dtype, device=self.device)
+            return SisoTransmissionResult(sinr, integer, integer.clone(), integer.clone(),
+                                          real, real.clone(), real.clone())
+        kwargs = dict(sinr=sinr, mcs_table_index=self.mcs_table_index,
+                      mcs_category=self.mcs_category)
+        mcs_index = self.illa(**kwargs)
+        decoded_bits, harq, sinr_eff, tbler, bler = self.phy_abstraction(mcs_index, **kwargs)
+        # SYS interprets all-zero SINR as an unscheduled user. Here the batch
+        # contains only occupied slots: a zero-power/deep-outage slot is a NACK.
+        outage = ~torch.any(sinr > 0, dim=(1, 2, 3, 4))
+        outage = outage[:, None]
+        decoded_bits = torch.where(outage, 0, decoded_bits)
+        harq = torch.where(outage, 0, harq)
+        sinr_eff = torch.where(outage, 0, sinr_eff)
+        tbler = torch.where(outage, 1, tbler)
+        bler = torch.where(outage, 1, bler)
+        return SisoTransmissionResult(
+            sinr, mcs_index.squeeze(-1), decoded_bits.squeeze(-1), harq.squeeze(-1),
+            sinr_eff.squeeze(-1), tbler.squeeze(-1), bler.squeeze(-1))
