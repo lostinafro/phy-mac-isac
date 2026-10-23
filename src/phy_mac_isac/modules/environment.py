@@ -873,7 +873,7 @@ class SimulationEnvironment:
                               pattern="hw_dipole",
                               polarization="V")
 
-    def step(self, cto: bool = True, cfo: bool = True, sync: bool = False):
+    def step(self, *args, **kwargs):
         """Evaluates operations in a frame. The base class just moves the UEs."""
         ### Update frame and geometry
         # Start by updating the frame number
