@@ -7,7 +7,7 @@ from sionna.phy import config as sionna_config
 from .. import utils as ut
 from ..modules import params
 from . import parameters as semantic_params
-from ..modules import resource_allocation as ra
+from . import allocation as ra
 from ..modules.transmission import SEuplinkOFDMpostMRC
 from ..modules.trackers import LinearKalmanTracker
 from ..modules.theory import DMimoFarFieldOMA
@@ -304,7 +304,7 @@ class SemanticISACScenario(SimulationEnvironment):
 
 
 def run_episode(episode: int,
-                ra_method: type[ra.ResourceAllocationBase],
+                ra_method: type[ra.SemanticResourceAllocationBase],
                 ra_kwargs: dict | None = None,
                 env_kwargs: dict | None = None,
                 step_kwargs: dict | None = None,
