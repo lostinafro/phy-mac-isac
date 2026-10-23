@@ -4,6 +4,7 @@ import torch
 from . import params
 from . import resource_allocation as ra
 from abc import ABC
+from dataclasses import dataclass
 
 class TransmissionBase(ABC):
     """Abstract base class for a physical-layer transmission scheme -- something that takes a
@@ -219,10 +220,10 @@ class SisoTransmissionResult:
 class SisoPhyAbstraction(TransmissionBase):
     """One SYS transport block per independent SISO slot.
 
-    Uses perfect channel knowledge and no cochannel interference, hence
-    SINR = P_RE * |h|**2 / noise_power_per_subcarrier. This bypasses waveform
-    decoding; SYS samples ACK/NACK from the predicted transport BLER.
-    ILLA selects MCS from the same instantaneous channel (ideal feedback).
+    With perfect CSI, SINR = P_RE * |h|**2 / noise_power_per_subcarrier.
+    Optional estimated CSI drives ILLA separately from the physical channel.
+    Residual estimation error is approximated as uncorrelated noise P_RE*MSE.
+    This bypasses waveform decoding; SYS samples ACK/NACK from transport BLER.
     Reserved REs are masked to zero and excluded from transport-block sizing.
     """
 
@@ -256,11 +257,17 @@ class SisoPhyAbstraction(TransmissionBase):
             self.phy_abstraction, bler_target=bler_target, device=str(self.device))
 
     @torch.no_grad()
-    def __call__(self, channel, tx_power=1.0, no=1.0) -> SisoTransmissionResult:
+    def __call__(self, channel, tx_power=1.0, no=1.0, *,
+                 channel_estimate=None, error_variance=0.0) -> SisoTransmissionResult:
         """Accept [S,1,1,1,1,T,F]; tx_power/no are linear powers per RE.
 
         Both powers accept a scalar or an [S] vector. ``no`` is noise power
         over one subcarrier, not noise PSD or total bandwidth noise.
+        ``channel_estimate`` has the same shape as channel and is used for
+        MCS selection only; channel still controls reception. ``error_variance``
+        is a scalar or [S] absolute complex-coefficient MSE. At nonzero MSE,
+        both SINRs use noise + P_RE*MSE, an abstraction of estimation mismatch
+        rather than a bit-level implementation of an imperfect equalizer.
         """
         h = torch.as_tensor(channel, device=self.device)
         expected = (1, 1, 1, 1, self.resource_grid.num_ofdm_symbols,
@@ -269,9 +276,13 @@ class SisoPhyAbstraction(TransmissionBase):
             raise ValueError(f"channel must have shape [S,{','.join(map(str, expected))}]")
         if not torch.is_complex(h) or not torch.isfinite(h).all():
             raise ValueError("channel must contain finite complex coefficients")
+        h_hat = h if channel_estimate is None else torch.as_tensor(channel_estimate, device=self.device)
+        if h_hat.shape != h.shape or not torch.is_complex(h_hat) or not torch.isfinite(h_hat).all():
+            raise ValueError("channel_estimate must be finite, complex and have the same shape as channel")
         slots = h.shape[0]
         powers = []
-        for name, value, strictly_positive in (("tx_power", tx_power, False), ("no", no, True)):
+        for name, value, strictly_positive in (("tx_power", tx_power, False), ("no", no, True),
+                                               ("error_variance", error_variance, False)):
             tensor = torch.as_tensor(value, dtype=h.real.dtype, device=self.device)
             if tensor.ndim > 1 or (tensor.ndim == 1 and tensor.shape[0] != slots):
                 raise ValueError(f"{name} must be a scalar or a vector of length S")
@@ -279,11 +290,16 @@ class SisoPhyAbstraction(TransmissionBase):
                     strictly_positive and (tensor == 0).any()):
                 raise ValueError(f"{name} must be finite and {'positive' if strictly_positive else 'nonnegative'}")
             powers.append(torch.broadcast_to(tensor, (slots,)))
-        power, noise = powers
-        gain = h[:, 0, 0, 0, 0].abs().square()
-        sinr = gain * (power / noise)[:, None, None]
-        sinr = torch.where(self.data_mask, sinr, 0)[..., None, None]
-        if not torch.isfinite(sinr).all():
+        power, noise, variance = powers
+        effective_noise = noise + power * variance
+        def make_sinr(cfr):
+            gain = cfr[:, 0, 0, 0, 0].abs().square()
+            raw = gain * (power / effective_noise)[:, None, None]
+            return torch.where(self.data_mask, raw, 0)[..., None, None]
+
+        sinr = make_sinr(h)
+        predicted_sinr = sinr if channel_estimate is None else make_sinr(h_hat)
+        if not torch.isfinite(sinr).all() or not torch.isfinite(predicted_sinr).all():
             raise ValueError("SINR overflow: check channel and power scaling")
         if slots == 0:
             integer = torch.empty(0, dtype=torch.int32, device=self.device)
@@ -292,7 +308,8 @@ class SisoPhyAbstraction(TransmissionBase):
                                           real, real.clone(), real.clone())
         kwargs = dict(sinr=sinr, mcs_table_index=self.mcs_table_index,
                       mcs_category=self.mcs_category)
-        mcs_index = self.illa(**kwargs)
+        mcs_index = self.illa(sinr=predicted_sinr, mcs_table_index=self.mcs_table_index,
+                              mcs_category=self.mcs_category)
         decoded_bits, harq, sinr_eff, tbler, bler = self.phy_abstraction(mcs_index, **kwargs)
         # SYS interprets all-zero SINR as an unscheduled user. Here the batch
         # contains only occupied slots: a zero-power/deep-outage slot is a NACK.
