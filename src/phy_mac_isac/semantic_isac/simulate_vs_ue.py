@@ -8,7 +8,7 @@ import time
 import numpy as np
 import pandas as pd
 import warnings
-from ..modules import resource_allocation as ra
+from . import allocation as ra
 from ..utils import atomic_output_path, get_processing_resources, run_simulations
 from . import parameters as semantic_params
 from .scenario import run_episode, results_labels, load_summary_from_npz, common_parser
