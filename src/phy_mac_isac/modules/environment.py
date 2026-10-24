@@ -521,7 +521,11 @@ class SimulationEnvironment:
         # Compute the rotation matrix to align boresight with the direction using the Rodrigues' rotation formula
         # Axis of rotation: cross product of boresight and direction
         axis = np.cross(boresight, direction)
-        axis = axis / np.linalg.norm(axis, axis=1, keepdims=True)  # Normalize
+        axis_norm = np.linalg.norm(axis, axis=1, keepdims=True)
+        axis = np.divide(axis, axis_norm, out=np.zeros_like(axis), where=axis_norm > 1e-12)
+        # Parallel/antiparallel boresights need any perpendicular axis; the
+        # angle below distinguishes identity from a half turn.
+        axis[axis_norm[:, 0] <= 1e-12] = [1, 0, 0]
         # Angle of rotation: angle between boresight and direction
         angle = np.arccos(np.clip(direction @ boresight[:, np.newaxis], -1.0, 1.0))
         # Create rotation matrix
@@ -603,10 +607,11 @@ class SimulationEnvironment:
             self.geo.update(self.frame, ue_location=new_position, ue_velocity=new_velocity)
 
         # Reflect the update in the scene
-        for u in range(self.U):
-            tx = self.scene.get(f"ue_{u}")
-            tx.position = new_position[u]
-            tx.velocity = new_velocity[u]
+        if self._load_scene:
+            for u in range(self.U):
+                tx = self.scene.get(f"ue_{u}")
+                tx.position = new_position[u]
+                tx.velocity = new_velocity[u]
 
         return new_position, new_velocity
 
@@ -1044,3 +1049,4 @@ if __name__ == "__main__":
     step_args = {"cfo": False}
     res = run_episode(1, ra.RoundRobinAllocation, env_kwargs=env_args, step_kwargs=step_args)
     print(res)
+

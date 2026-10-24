@@ -1,243 +1,212 @@
-"""Allocation-driven TDD slots with one SISO UE per occupied slot."""
-
-from dataclasses import dataclass
-import os
+"""Allocation-driven SISO links using the common simulation environment."""
 import numpy as np
 import torch
-from matplotlib import pyplot as plt
-from argparse import ArgumentParser
-from sionna.phy import config as sionna_config
+from sionna.phy.channel import GenerateOFDMChannel
+from sionna.phy.channel.tr38901 import PanelArray, UMi
+from sionna.phy.ofdm import ResourceGrid
+
 from .. import utils as ut
-from ..modules import params
-from . import parameters as anomaly_params
-from .allocation import TDDResourceAllocation
-from ..modules.transmission import SEuplinkOFDMpostMRC, SisoTransmissionResult, SisoPhyAbstraction
-from ..modules.trackers import LinearKalmanTracker
-from ..modules.theory import DMimoFarFieldOMA
 from ..modules.environment import SimulationEnvironment
-
-
-@dataclass(frozen=True)
-class StepResult:
-    allocation: np.ndarray             # [R], including idle slots (-1)
-    slot_indices: np.ndarray           # [S], occupied positions in allocation
-    ue_ids: np.ndarray                 # [S], corresponding UE identities
-    channel: torch.Tensor             # [S,1,1,1,1,T,F]
-    transmission: SisoTransmissionResult
-
-    @property
-    def decoded(self) -> np.ndarray:
-        """[R] success flags in the original scheduler order; idle is False."""
-        result = np.zeros(self.allocation.size, dtype=bool)
-        result[self.slot_indices] = self.transmission.decoded.cpu().numpy()
-        return result
-
-    @property
-    def successful_ues(self) -> np.ndarray:
-        return self.allocation[self.decoded]
+from ..modules.transmission import SisoPhyAbstraction
+from . import parameters as anomaly_params
+from .parameters import StepResult
 
 
 class AnomalyTrackingScenario(SimulationEnvironment):
+    """Generate UE geometry through the base environment, without ray tracing.
+
+    Call setup_scenario(), then setup_modules(), then step(allocation).
+    UEs are stationary by default; explicit mobility and restored trajectories
+    use the base environment's geometry update. One occupied slot is one batch
+    example with a single UE/AP antenna and a single transport block.
     """
-    Configures and manages the setup of the SemanticISAC scenario.
-    """
+
     shared_type = anomaly_params.SharedParams
     wireless_type = anomaly_params.WirelessParams
 
     def __init__(self, *args, **kwargs):
-        kwargs.setdefault("load_scene", False)
+        if kwargs.get("load_scene", False) or kwargs.get("scene_name") is not None:
+            raise ValueError("AnomalyTrackingScenario uses load_scene=False and no RT scene")
+        kwargs["load_scene"] = False
         super().__init__(*args, **kwargs)
+        self._scenario_ready = False
+        self._modules_ready = False
 
-    def step(self, allocation) -> StepResult:
-        """Evaluate one allocation without running or modifying the MAC scheduler.
+    def ue_random_positioning(self, height=anomaly_params.UE_HEIGHT,
+                              min_dist=np.ones(2), margin=0.95):
+        """Use the shared placement algorithm with the anomaly UE height."""
+        return super().ue_random_positioning(height, min_dist, margin)
 
-        The manager's (push_budget,pull_budget) tuple is NOT an allocation.
-        Push contention/collisions must be resolved outside this single-UE PHY.
-        Feedback is a sampled TB ACK/NACK, not a waveform decoder CRC.
+    def setup_scenario(self, ap_pos=None, antenna_spacing=None, init_ue_pos=None,
+                       ue_vel_mean=anomaly_params.VEL_MAG,
+                       ue_vel_cov=anomaly_params.VEL_STD):
+        """Generate or restore base geometry; default AP height is 10 m (UMi).
+
+        A zero velocity covariance must remain exactly zero, including the
+        vertical component, so the default geometry is stationary.
         """
+        super().setup_scenario(
+            ap_pos=10.0 if ap_pos is None else ap_pos,
+            antenna_spacing=antenna_spacing, init_ue_pos=init_ue_pos,
+            ue_vel_mean=ue_vel_mean, ue_vel_cov=ue_vel_cov)
+        if not self._load_env and np.all(np.asarray(ue_vel_cov) == 0):
+            self.geo.ue_vel_cov.fill(0)
+        self._scenario_ready = True
+
+    def setup_modules(self, ra_algorithm=None, transmission_module=None,
+                      tracker_module=None, performance=None, *, device="cpu"):
+        """Wire the shared module slots and create a geometry-based UMi channel.
+
+        Allocation is supplied externally, so no allocator/tracker is required.
+        Optional injected modules are retained using the base setup_modules API.
+        """
+        if not self._scenario_ready:
+            raise RuntimeError("Call setup_scenario() before setup_modules()")
+        self.device = torch.device(device)
+        self.resource_grid = ResourceGrid(
+            num_ofdm_symbols=self.T, fft_size=self.F,
+            subcarrier_spacing=self.wireless.sc_spacing,
+            num_tx=1, num_streams_per_tx=1,
+            cyclic_prefix_length=int(round(self.wireless.cp_time * self.wireless.bw)),
+            pilot_pattern="kronecker",
+            pilot_ofdm_symbol_indices=[0] if self.T < 6 else [2, self.T - 3],
+            device=str(self.device))
+        array_kwargs = dict(num_rows_per_panel=1, num_cols_per_panel=1,
+                            polarization="single", polarization_type="V",
+                            antenna_pattern="omni", carrier_frequency=self.wireless.carrier,
+                            device=str(self.device))
+        self.channel_model = UMi(
+            carrier_frequency=self.wireless.carrier, o2i_model="low",
+            ut_array=PanelArray(**array_kwargs), bs_array=PanelArray(**array_kwargs),
+            direction=self.wireless.direction, enable_pathloss=True,
+            enable_shadow_fading=self.wireless.enable_shadow_fading,
+            device=str(self.device))
+        self.channel_generator = GenerateOFDMChannel(
+            self.channel_model, self.resource_grid,
+            normalize_channel=False, device=str(self.device))
+        if transmission_module is None:
+            transmission_module = SisoPhyAbstraction(
+                self.resource_grid, self.device, bler_target=self.wireless.bler_target,
+                direction=self.wireless.direction, mcs_table_index=self.wireless.mcs_table_index)
+        super().setup_modules(ra_algorithm, transmission_module, tracker_module, performance)
+        self._topology_batch_size = None
+        self._modules_ready = True
+
+    def _set_channel_topology(self, ue_ids):
+        """One actual AP/UE pair per occupied slot, from the current frame."""
+        slots = ue_ids.size
+        # System-level model buffers need resetting when the occupied-slot batch
+        # size changes between frames. Available on supported Sionna 2.x models.
+        if self._topology_batch_size != slots:
+            self.channel_model.reset_topology()
+        self._topology_batch_size = slots
+        def tensor(value):
+            return torch.as_tensor(np.array(value, copy=True), dtype=torch.float32,
+                                   device=self.device)
+
+        ut_loc = tensor(self.geo.ue_location[self.frame, ue_ids])[:, None, :]
+        bs_loc = tensor(np.broadcast_to(self.geo.ap_location[0], (slots, 1, 3)))
+        velocity = tensor(self.geo.ue_velocity[self.frame, ue_ids])[:, None, :]
+        # Fixed vertically polarized omnidirectional elements. The RT array's
+        # +Z-boresight rotation is not a PHY PanelArray orientation (+X boresight).
+        self.channel_model.set_topology(
+            ut_loc=ut_loc, bs_loc=bs_loc,
+            ut_orientations=torch.zeros_like(ut_loc),
+            bs_orientations=torch.zeros_like(bs_loc),
+            ut_velocities=velocity,
+            in_state=torch.zeros((slots, 1), dtype=torch.bool, device=self.device),
+            los=self.wireless.force_los)
+
+    def _estimate_channel(self, channel):
+        """Add independent circular complex Gaussian estimation error.
+
+        Variance is absolute E[abs(error)**2] per CFR coefficient, after path
+        loss, and defaults to zero. Zero variance consumes no random samples.
+        """
+        variance = self.wireless.channel_estimation_error_variance
+        if not np.isfinite(variance) or variance < 0:
+            raise ValueError("channel_estimation_error_variance must be finite and nonnegative")
+        if variance == 0 or channel.numel() == 0:
+            return channel.clone()
+        error = (self.rng.standard_normal(tuple(channel.shape))
+                 + 1j * self.rng.standard_normal(tuple(channel.shape))) * np.sqrt(variance / 2)
+        return channel + torch.as_tensor(error, dtype=channel.dtype, device=self.device)
+
+    @torch.no_grad()
+    def step(self, allocation) -> StepResult:
+        """Advance geometry, then decode one transport block per occupied slot.
+
+        Allocation contains ordered zero-based UE IDs (-1 = idle), up to the
+        configured frame's slot count. Collisions must be resolved by the MAC.
+        """
+        if not self._modules_ready:
+            raise RuntimeError("Call setup_scenario() and setup_modules() before step()")
         allocation = np.asarray(allocation)
         if allocation.ndim != 1 or (allocation.size and (
                 not np.issubdtype(allocation.dtype, np.integer)
                 or np.issubdtype(allocation.dtype, np.bool_))):
             raise ValueError("allocation must be a 1D sequence of integer UE IDs")
-        if np.any((allocation < -1) | (allocation >= self.config.num_ues)):
-            raise ValueError("UE IDs must lie in [0,num_ues); use -1 for idle")
+        if allocation.size > self.S:
+            raise ValueError("allocation exceeds num_slots")
+        if np.any((allocation < -1) | (allocation >= self.U)):
+            raise ValueError("UE IDs must lie in [0,num_ue); use -1 for idle")
+        if self.frame + 1 >= self.K:
+            raise RuntimeError("All configured frames have already been simulated")
         allocation = allocation.astype(np.int64, copy=True)
         slot_indices = np.flatnonzero(allocation >= 0)
         ue_ids = allocation[slot_indices]
-        slots = ue_ids.size
-        shape = (slots, 1, 1, 1, 1, self.config.num_ofdm_symbols,
-                 self.config.num_subcarriers)
-        if slots:
-            h = torch.as_tensor(self.channel_generator(batch_size=slots), device=self.device)
-            if tuple(h.shape) != shape:
-                raise ValueError(f"Channel generator returned {tuple(h.shape)}, expected {shape}")
-            ids = torch.as_tensor(ue_ids, device=self.device)
-            h = h * self.link_gain[ids].sqrt().reshape(-1, 1, 1, 1, 1, 1, 1)
-        else:
-            h = torch.empty(shape, dtype=torch.complex64, device=self.device)
-        transmission = self.transmission(
-            h, tx_power=self.config.tx_power_w / self.config.num_subcarriers,
-            no=self.config.noise_power_per_subcarrier)
+        # The base lifecycle starts at -1. Frame zero is written before sampling.
         self.frame += 1
-        return StepResult(allocation, slot_indices, ue_ids, h, transmission)
+        self.move_ue()
+        shape = (ue_ids.size, 1, 1, 1, 1, self.T, self.F)
+        if ue_ids.size:
+            self._set_channel_topology(ue_ids)
+            channel = self.channel_generator(batch_size=ue_ids.size)
+            if tuple(channel.shape) != shape:
+                raise ValueError(f"Channel generator returned {tuple(channel.shape)}, expected {shape}")
+        else:
+            channel = torch.empty(shape, dtype=torch.complex64, device=self.device)
+        channel_estimate = self._estimate_channel(channel)
+        # Both available power and total-band noise are divided by F, giving
+        # per-RE quantities with the same wideband SNR as the shared parameters.
+        if self.wireless.direction == "uplink":
+            power = np.asarray(self.wireless.ue_power)[ue_ids]
+            noise = self.wireless.nob_ap
+        else:
+            power = np.full(ue_ids.size, np.asarray(self.wireless.ap_power)[0])
+            noise = self.wireless.nob_ue
+        transmission = self.transmission_module(
+            channel, tx_power=power / self.F, no=noise / self.F,
+            channel_estimate=channel_estimate,
+            error_variance=self.wireless.channel_estimation_error_variance)
+        return StepResult(allocation, slot_indices, ue_ids, channel, transmission,
+                          channel_estimate, self.wireless.channel_estimation_error_variance,
+                          self.frame)
 
 
-def run_episode(episode: int,
-                env_kwargs: dict | None = None,
-                step_kwargs: dict | None = None,
-                device: str | torch.device | None = None,
-                save: bool = True,
-                save_dirpath: str = params.DATA_FOLDER,
-                quiet: bool = False,
-                msg: str = "") -> dict:
-    """Run one full simulation episode: build the environment, wire up the modules, step
-    through every frame, then save the whole run's Shared/Geometric/Estimation/Metrics
-    parameters to a single .npz.
+def run_episode(episode, allocations, env_kwargs=None, device="cpu") -> list[StepResult]:
+    """Run an external allocation sequence through the shared environment lifecycle.
 
-    :param episode: int, episode index -- seeds the environment's RNG, and disambiguates
-        this run's output filename (must be the first positional argument).
-    :param env_kwargs: dict | None, kwargs forwarded to `SimulationEnvironment.__init__`
-        (num_ue, num_ap, area_coordinates, lo_ppm, ue_power, ...). `episode` is filled in
-        automatically -- don't include it here.
-    :param step_kwargs: dict | None, kwargs forwarded to every `env.step(...)` call
-        (cto, cfo, sync).
-
-    :param device: str | torch.device, the device to use for Sionna computations.
-    :param save: bool, if False, skip saving (useful for quick interactive runs).
-    :param save_dirpath: str, directory the output .npz is written to.
-    :param quiet: bool, print a per-frame progress bar.
-    :param msg: str, message to display before the progress bar.
-
-    :returns: dict, small scalar summary (mean over frames) of a few key metrics, plus the
-        saved file path under "save_path" (None if save=False). Useful for a parameter-sweep
-        script to aggregate across episodes without re-reading every .npz.
+    ``allocations`` yields one vector per frame. No MAC decisions or semantic
+    tracking metrics are fabricated here. Save the returned StepResults in the
+    caller, together with env.c/wireless/geo when managing a scenario directly.
     """
-    ### Set up machine variables
-    if device is None:
-        device = "cpu"
-
-    device = torch.device(device)
-
-    if device.type == "cuda" and not torch.cuda.is_available():
-        raise RuntimeError(f"CUDA was requested ({device}), but CUDA is unavailable")
-
-    # Take the kwargs
-    env_kwargs = env_kwargs or {}
-    step_kwargs = step_kwargs or {}
-
-    # Validate the complete argument dictionary before routing it to each stage.
-    # Dataclass types come from the selected scenario so subclass fields are supported.
+    env_kwargs = dict(env_kwargs or {})
     ut.validate_kwargs(
-        env_kwargs,
-        AnomalyTrackingScenario.shared_type,
-        AnomalyTrackingScenario.wireless_type,
-        SimulationEnvironment,
-        AnomalyTrackingScenario.setup_scenario,
-        exclude={"self", "episode", "shared_params", "wireless_params", "c"},
-        name="env_kwargs",
-    )
-    ut.validate_kwargs(
-        step_kwargs,
-        AnomalyTrackingScenario.step,
-        exclude={"self"},
-        name="step_kwargs",
-    )
-
-    # --- Build environment ---
-    sha_kwargs = ut.filter_call_kwargs(AnomalyTrackingScenario.shared_type, **env_kwargs)
-    wir_kwargs = ut.filter_call_kwargs(AnomalyTrackingScenario.wireless_type, **env_kwargs)
-    ini_kwargs = ut.filter_call_kwargs(SimulationEnvironment, **env_kwargs)
-    ini_kwargs.setdefault("env_dirpath", save_dirpath)
-    env = AnomalyTrackingScenario(episode, sha_kwargs, wir_kwargs, **ini_kwargs)
-
-    set_kwargs = ut.filter_call_kwargs(env.setup_scenario, **env_kwargs)
-    env.setup_scenario(**set_kwargs)
-
-    # --- Build and wire up modules ---
-    ra_module = TDDResourceAllocation(env.c, env.wireless, env.geo)
-    tx_module = SEuplinkOFDMpostMRC(env.wireless, ra_module, device)
-
-    trans_mat = np.eye(3)[np.newaxis, :, :].repeat(env.U, axis=0)
-    obs_mat = np.eye(3)[np.newaxis, :, :].repeat(env.U, axis=0)
-    proc_noise_cov = env.geo.ue_vel_cov * env.wireless.frame_time ** 2
-    obs_noise_cov = np.eye(3)[np.newaxis, :, :].repeat(env.U, axis=0)
-    control_mat = np.eye(3)[np.newaxis, :, :].repeat(env.U, axis=0)
-    tracker = LinearKalmanTracker(trans_mat, obs_mat, proc_noise_cov, obs_noise_cov, control_mat)
-
-    performance = DMimoFarFieldOMA(env.c, env.wireless, env.geo, env.estimate)
-
-    env.setup_modules(ra_module, tx_module, tracker, performance)
-
-    # --- Run the simulation ---
-    frame_iter = ut.std_progressbar(range(env.c.num_frames), desc=msg) if not quiet else range(env.c.num_frames)
-    for _ in frame_iter:
-        env.step(**step_kwargs)
-
-    # --- Save the whole run: Estimation, and Metrics parameters ---
-    save_path = None
-    if save:
-        ra_method_label = next(key for key, val in ra.available_methods.items() if val == ra_method)
-        filename = os.path.join(save_dirpath, f"{ra_method_label}_ep{episode:04d}.npz")
-        save_path = params.save_params_npz(filename, c=env.c, wireless=env.wireless, geo=env.geo,
-                                      estimate=env.estimate, metrics=env.metrics)
-
-    # --- Small scalar summary for quick cross-episode aggregation ---
-    summary = {
-        "save_path": save_path,
-        "avg_se_achievable": np.nanmean(env.metrics.se_achievable[:-1], axis=0),
-        "avg_se_set": np.nanmean(env.metrics.se_set[:-1], axis=0),
-        "avg_queue": np.nanmean(env.metrics.queue[:-1], axis=0),
-        "avg_misclassification": np.nanmean(env.metrics.misclassification[:-1], axis=0),
-        "avg_risk_predicted": np.nanmean(env.metrics.risk_predicted[:-1], axis=0),
-        "avg_risk_hat": np.nanmean(env.metrics.risk_hat[:-1], axis=0),
-    }
-    return summary
-
-
-results_labels = ["avg_se_achievable", "avg_se_set", "avg_queue", "avg_misclassification", "avg_risk_predicted", "avg_risk_hat"]
-
-
-def load_summary_from_npz(filepath: str, results_label: list[str]) -> dict:
-    """Reconstruct a run_episode-style summary dict from an already-saved .npz,
-    for episodes being skipped because they're already done."""
-    with np.load(filepath) as data:
-        summary = {"save_path": filepath}
-        for label in results_label:
-            # Remove the avg_ from the label to catch the right field
-            field = label.replace("avg_", "", 1)
-            # Raise error if the field is not found
-            if field not in data:
-                raise KeyError(f"Field '{field}' not found in {filepath}. Available keys: {list(data.keys())}")
-            # Add the avg_ back to the label to match the original format while averaging the data
-            summary[label] = np.nanmean(data[field][:-1], axis=0)
-    return summary
-
-
-def common_parser():
-    parser = ArgumentParser(description="Common parser to run simulations.")
-
-    parser.add_argument("--ra_method", type=str, default="", help="Method to use for RA simulation")
-    parser.add_argument('--parallel', action='store_true', help="Enable parallel processing")
-    parser.add_argument('--savesubdir', type=str, default="", help="Optional name of the subdirectory to save results in")
-    parser.add_argument('--quiet', action='store_true', help="Quiet outputs")
-    parser.add_argument("--overwrite", action='store_true', help="Overwrite results  if already present in the savesubdir")
-    parser.add_argument("--concurrent", type=int, default=1, help="Set the number of concurrent scripts run")
-    parser.add_argument("--cpu", action='store_true', help="Set the processing on the CPU only")
-
-    args = parser.parse_args()
-    if args.cpu:
-        sionna_config.device = "cpu"
-        device = "cpu"
-    else:
-        sionna_config.device = "cuda:0"
-        device = "cuda:0"
-
-    return args.ra_method, args.parallel, args.savesubdir, args.quiet, args.overwrite, args.concurrent, device
+        env_kwargs, AnomalyTrackingScenario.shared_type, AnomalyTrackingScenario.wireless_type,
+        SimulationEnvironment, AnomalyTrackingScenario.setup_scenario,
+        exclude={"self", "episode", "shared_params", "wireless_params", "c"}, name="env_kwargs")
+    constructor = ut.filter_call_kwargs(SimulationEnvironment, **env_kwargs)
+    constructor.setdefault("load_env", False)
+    env = AnomalyTrackingScenario(
+        episode, ut.filter_call_kwargs(AnomalyTrackingScenario.shared_type, **env_kwargs),
+        ut.filter_call_kwargs(AnomalyTrackingScenario.wireless_type, **env_kwargs), **constructor)
+    env.setup_scenario(**ut.filter_call_kwargs(env.setup_scenario, **env_kwargs))
+    env.setup_modules(device=device)
+    return [env.step(allocation) for allocation in allocations]
 
 
 if __name__ == "__main__":
-    num_ue = 100
-    env_args = {"debugging": True, "num_frames": 100, "num_ue": num_ue}
-    summary = run_episode(1, env_kwargs=env_args)
-    print(summary)
+    results = run_episode(1, [np.array([0, -1, 1])] * 2,
+                          env_kwargs={"num_ue": 3, "num_slots": 3, "num_frames": 2})
+    print([result.decoded for result in results])

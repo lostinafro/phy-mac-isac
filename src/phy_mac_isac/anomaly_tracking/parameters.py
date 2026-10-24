@@ -1,7 +1,13 @@
 from copy import deepcopy
-from pathlib import Path
 import numpy as np
 from dataclasses import dataclass, field
+from typing import TYPE_CHECKING
+import math
+
+import torch
+
+if TYPE_CHECKING:
+    from ..modules.transmission import SisoTransmissionResult
 
 from .. import utils as ut
 from ..modules.params import SCENE_FOLDER, DATA_FOLDER, CACHE_FOLDER, _directory_from_env
@@ -16,7 +22,7 @@ NUM_AP = 1
 NUM_ANT = 1
 NUM_UE = 100
 VEL_MAG = 0.                 # [m/s]
-VEL_STD = 1e-9                 # [m/s]
+VEL_STD = 0.                 # [m/s]
 NUM_REGIONS = 1
 UE_HEIGHT = 1             # [m]
 
@@ -73,6 +79,18 @@ class SharedParams(BaseShared):
     num_regions: int = NUM_REGIONS
     rays: dict = field(default_factory=lambda: deepcopy(RT_PARAM))
 
+    def __post_init__(self):
+        super().__post_init__()
+        if self.num_ap != 1 or self.num_ant != 1:
+            raise ValueError("Anomaly tracking requires a single SISO AP")
+        for name in ("num_ue", "num_slots", "num_frames", "num_sym", "num_scs"):
+            value = getattr(self, name)
+            if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+                raise ValueError(f"{name} must be a positive integer")
+        if self.num_scs % 12:
+            raise ValueError("num_scs must be a multiple of 12")
+
+
 @dataclass
 class WirelessParams(BaseWireless):
     """Parameters related to wireless communication.
@@ -90,3 +108,56 @@ class WirelessParams(BaseWireless):
 
     # Guard time between frames [s]
     guard_time: float = 0.
+
+
+    # Geometry-based TR 38.901 UMi channel and SYS abstraction settings.
+    direction: str = "uplink"
+    mcs_table_index: int = 1
+    bler_target: float = 0.1
+    force_los: bool | None = None
+    enable_shadow_fading: bool = False
+    # Absolute complex-CFR coefficient MSE: E[abs(h_hat - h)**2].
+    channel_estimation_error_variance: float = 0.0
+
+    def __post_init__(self):
+        super().__post_init__()
+        if self.direction not in ("uplink", "downlink"):
+            raise ValueError("direction must be uplink or downlink")
+        tables = (1, 2) if self.direction == "uplink" else (1, 2, 3, 4)
+        if self.mcs_table_index not in tables or not 0 < self.bler_target < 1:
+            raise ValueError("Invalid MCS table or BLER target")
+        if self.force_los is not None and not isinstance(self.force_los, bool):
+            raise ValueError("force_los must be None or bool")
+        variance = self.channel_estimation_error_variance
+        if not math.isfinite(variance) or variance < 0:
+            raise ValueError("channel_estimation_error_variance must be finite and nonnegative")
+
+
+@dataclass(frozen=True)
+class StepResult:
+    """Compact occupied-slot channels and PHY results for a single frame.
+
+    Channel arrays have shape [S,1,1,1,1,T,F], where S is the number of
+    occupied slots. ``slot_indices`` maps these rows to the original allocation.
+    ``channel`` is physical propagation; ``channel_estimate`` includes error.
+    """
+
+    allocation: np.ndarray
+    slot_indices: np.ndarray
+    ue_ids: np.ndarray
+    channel: torch.Tensor
+    transmission: "SisoTransmissionResult"
+    channel_estimate: torch.Tensor
+    channel_error_variance: float
+    frame: int
+
+    @property
+    def decoded(self) -> np.ndarray:
+        """Success flags in original slot order; idle slots are False."""
+        result = np.zeros(self.allocation.size, dtype=bool)
+        result[self.slot_indices] = self.transmission.decoded.cpu().numpy()
+        return result
+
+    @property
+    def successful_ues(self) -> np.ndarray:
+        return self.allocation[self.decoded]
