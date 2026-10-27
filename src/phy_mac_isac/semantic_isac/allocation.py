@@ -118,7 +118,7 @@ class SemanticResourceAllocationBase(ResourceAllocationBase):
             with no allocation (only prior is used); risk1 is a np.ndarray (U) representing the semantic risk of
             allocating users; delta is a np.ndarray (U) representing their difference.
         """
-        covariance_post = np.linalg.inv(efim + np.linalg.inv(covariance_pri))
+        covariance_post = np.linalg.inv(efim + np.linalg.pinv(covariance_pri))
         bound_dist = np.zeros(self.c.num_ue)
         bound_normal = np.zeros((self.c.num_ue, 3))
         for r in range(self.c.num_regions):

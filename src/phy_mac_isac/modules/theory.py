@@ -118,7 +118,7 @@ def eval_speb(efim: np.ndarray, covariance_pri: np.ndarray) -> tuple:
         with no allocation (only prior is used); risk1 is a np.ndarray (U) representing the sPEB when
         allocating users; delta is a np.ndarray (U) representing their difference.
     """
-    covariance_post = np.linalg.inv(efim + np.linalg.inv(covariance_pri))
+    covariance_post = np.linalg.inv(efim + np.linalg.pinv(covariance_pri))
     speb_prior = np.linalg.trace(covariance_pri)
     speb_post = np.linalg.trace(covariance_post)
     delta_speb = speb_prior - speb_post

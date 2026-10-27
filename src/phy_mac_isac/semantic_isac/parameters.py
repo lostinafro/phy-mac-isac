@@ -104,6 +104,18 @@ class Metrics(BaseMetrics):
      All metric variables are saved, from frame = 0 to frame = self.c.num_frames - 1.
      If frame = self.c.num_frames (indexed also with [-1]), the element is the initialization variable.
     """
+    # Communication parameters
+    delta_queue: np.ndarray = field(init=False)
+    se_oracle: np.ndarray = field(init=False)
+    # Localization parameters
+
+
+    # Semantic parameters
+    misclassification: np.ndarray = field(init=False)
+    risk_predicted: np.ndarray = field(init=False)
+    risk_predicted_full: np.ndarray = field(init=False)
+    risk_hat: np.ndarray = field(init=False)
+
     def __post_init__(self):
         self.ue_slot_map = np.zeros((self.c.num_frames + 1, self.c.num_slots, self.c.num_ue), dtype=bool)
         self.large_scale = np.zeros((self.c.num_frames + 1, self.c.num_ap, self.c.num_ue, ))
