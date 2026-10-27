@@ -1,8 +1,9 @@
 import sionna.phy as phy
+from sionna.sys import PHYAbstraction, InnerLoopLinkAdaptation
 import numpy as np
 import torch
 from . import params
-from . import resource_allocation as ra
+from .resource_allocation import ResourceAllocationBase
 from abc import ABC
 from dataclasses import dataclass
 
@@ -18,10 +19,14 @@ class TransmissionBase(ABC):
         transmission scheme.
     """
 
-    def __init__(self, wireless: params.WirelessParams, ra_module: ra.ResourceAllocationBase, device: torch.device):
+    def __init__(self,
+                 wireless: params.WirelessParams,
+                 ra_module: ResourceAllocationBase,
+                 device: torch.device | str = "cpu"):
         self.wireless = wireless
         self.ra_module = ra_module
-        self.device = device
+        self.device = torch.device(device)
+        # TODO: set a default for device
 
     def __call__(self, channel: np.ndarray, tx_power: np.ndarray | float | None = None,
                  no: float | None = None, **kwargs) -> tuple:
@@ -46,7 +51,7 @@ class TransmissionCFR(TransmissionBase):
     _MOD_BITS = {"BPSK": 1, "QPSK": 2, "16QAM": 4, "64QAM": 6, "256QAM": 8}
     # TODO: set the class to be able to be called with different num_bit_per_sym, avoid naming the modulation, and output the empirical SE
 
-    def __init__(self, wireless: params.WirelessParams, ra_module: ra.ResourceAllocationBase, device: torch.device,
+    def __init__(self, wireless: params.WirelessParams, ra_module: ResourceAllocationBase, device: torch.device,
                  modulation: str = "QPSK", coderate: float = 0.5):
         super().__init__(wireless, ra_module, device)
         try:
@@ -60,8 +65,11 @@ class TransmissionCFR(TransmissionBase):
         self.demapper = phy.mapping.Demapper("app", "qam", self.num_bits_per_symbol)
         self.apply_channel = phy.channel.ApplyOFDMChannel()
 
-    def __call__(self, channel: np.ndarray, tx_power: np.ndarray | float | None = None,
-                 no: float | None = None, **kwargs) -> tuple:
+    def __call__(self,
+                 channel: np.ndarray | torch.Tensor,
+                 tx_power: np.ndarray | float | None = None,
+                 no: float | None = None,
+                 **kwargs) -> tuple:
         """Run one uplink OFDM transmission over a given frequency channel realization.
 
         :param channel: complex CFR for a *single slot*, shape (S, L, M, U, T, F) --
@@ -70,10 +78,7 @@ class TransmissionCFR(TransmissionBase):
         :param resource_allocation: ResourceAllocationBase, instance of the resource allocation algorithm used
          :param tx_power: np.ndarray | float | None, per-UE transmit power (linear), shape
             (U, ) or scalar. Defaults to `self.wireless.ue_power`.
-        :param no: float | None, noise power spectral density (linear). If None, defaults to
-            `self.wireless.n0b_ap` -- check this scaling matches your link budget before relying
-            on the default; it's a placeholder, not a validated noise-power derivation.
-
+        :param no: float | None, noise power spectral density (linear). If None, defaults to `self.wireless.n0b_ap`.
         :returns: tuple (h_hat, b, b_hat, x, x_hat) -- LS channel estimate, transmitted bits,
             decoded bits, transmitted frequency-domain samples, decoded frequency-domain samples.
         """
@@ -126,7 +131,7 @@ class SEuplinkOFDMpostMRC(TransmissionBase):
     :param wireless: WirelessParams, used for a default noise level if `no` isn't given.
     """
 
-    def __init__(self, wireless: params.WirelessParams, ra_module: ra.ResourceAllocationBase, device: torch.device,
+    def __init__(self, wireless: params.WirelessParams, ra_module: ResourceAllocationBase, device: torch.device,
                  compiled_core: bool = False):
         super().__init__(wireless, ra_module, device)
         self.apply_channel = phy.channel.ApplyOFDMChannel()
@@ -201,6 +206,7 @@ class SEuplinkOFDMpostMRC(TransmissionBase):
 
 
 @dataclass(frozen=True)
+# TODO: To be merged with the general results as metrics
 class SisoTransmissionResult:
     """Compact slot results; every vector has shape [S]. SINR is [S,T,F,1,1]."""
 
@@ -227,38 +233,51 @@ class SisoPhyAbstraction(TransmissionBase):
     Reserved REs are masked to zero and excluded from transport-block sizing.
     """
 
-    def __init__(self, resource_grid, device: torch.device | str = "cpu", *,
-                 bler_target: float = 0.1, direction: str = "uplink",
-                 mcs_table_index: int = 1, data_mask=None):
-        from sionna.sys import PHYAbstraction, InnerLoopLinkAdaptation
+    def __init__(self,
+                 wireless: params.WirelessParams,
+                 ra_module: ResourceAllocationBase,
+                 device: torch.device | str = "cpu",
+                 data_mask: torch.Tensor | None = None):
+         #resource_grid, device: torch.device | str = "cpu", *,
+         #bler_target: float = 0.1, direction: str = "uplink",
+         #mcs_table_index: int = 1, data_mask=None):
+        super().__init__(wireless, ra_module, device)
 
-        if direction not in ("uplink", "downlink"):
-            raise ValueError("direction must be 'uplink' or 'downlink'")
-        valid_tables = (1, 2) if direction == "uplink" else (1, 2, 3, 4)
-        if mcs_table_index not in valid_tables:
-            raise ValueError(f"Invalid MCS table for {direction}: {mcs_table_index}")
-        if not 0 < bler_target < 1:
-            raise ValueError("bler_target must lie strictly between 0 and 1")
-        if resource_grid.num_tx != 1 or resource_grid.num_streams_per_tx != 1:
+        # Just to let it less verbose
+        self.rg = self.ra_module.rg
+        
+        # Check input
+        if self.rg.num_tx != 1 or self.rg.num_streams_per_tx != 1:
             raise ValueError("The resource grid must have one transmitter and stream")
-        self.device = torch.device(device)
-        self.resource_grid = resource_grid
-        self.mcs_table_index = mcs_table_index
-        self.mcs_category = int(direction == "downlink")
-        shape = (resource_grid.num_ofdm_symbols, resource_grid.fft_size)
+        
+        # Resource grid shape
+        shape = (self.rg.num_ofdm_symbols, self.rg.fft_size)
+
+        # Create mask of data symbols from the resource grid
         # ResourceGrid type 0 identifies data (1 pilots, 2 guard, 3 DC).
         if data_mask is None:
-            data_mask = resource_grid.build_type_grid()[0, 0] == 0
+            data_mask = self.rg.build_type_grid()[0, 0] == 0
         self.data_mask = torch.as_tensor(data_mask, dtype=torch.bool, device=self.device)
+        #  Check if data contains REs
         if tuple(self.data_mask.shape) != shape or not self.data_mask.any():
             raise ValueError(f"data_mask must have shape {shape} and contain data REs")
+
+        # Setup PhyAbstraction and LinkAdaptation modules
+        self.posteq_sinr = phy.ofdm.LMMSEPostEqualizationSINR(self.ra_module.rg,
+                                                              self.ra_module.sm,
+                                                              device=str(self.device))
         self.phy_abstraction = PHYAbstraction(device=str(self.device))
-        self.illa = InnerLoopLinkAdaptation(
-            self.phy_abstraction, bler_target=bler_target, device=str(self.device))
+        self.illa = InnerLoopLinkAdaptation(self.phy_abstraction,
+                                            bler_target=self.wireless.bler_target,
+                                            device=str(self.device))
 
     @torch.no_grad()
-    def __call__(self, channel, tx_power=1.0, no=1.0, *,
-                 channel_estimate=None, error_variance=0.0) -> SisoTransmissionResult:
+    def __call__(self,
+                 channel: np.ndarray | torch.Tensor,
+                 tx_power: np.ndarray | float | None = None,
+                 no: float | None = None, *,
+                 channel_estimate: torch.Tensor | None = None,
+                 error_variance: float = 0.) -> tuple:
         """Accept [S,1,1,1,1,T,F]; tx_power/no are linear powers per RE.
 
         Both powers accept a scalar or an [S] vector. ``no`` is noise power
@@ -269,16 +288,49 @@ class SisoPhyAbstraction(TransmissionBase):
         both SINRs use noise + P_RE*MSE, an abstraction of estimation mismatch
         rather than a bit-level implementation of an imperfect equalizer.
         """
+        # Check exact channel
         h = torch.as_tensor(channel, device=self.device)
-        expected = (1, 1, 1, 1, self.resource_grid.num_ofdm_symbols,
-                    self.resource_grid.fft_size)
+        expected = (1, 1, 1, 1, self.rg.num_ofdm_symbols, self.rg.fft_size)
         if h.ndim != 7 or tuple(h.shape[1:]) != expected:
             raise ValueError(f"channel must have shape [S,{','.join(map(str, expected))}]")
         if not torch.is_complex(h) or not torch.isfinite(h).all():
             raise ValueError("channel must contain finite complex coefficients")
-        h_hat = h if channel_estimate is None else torch.as_tensor(channel_estimate, device=self.device)
-        if h_hat.shape != h.shape or not torch.is_complex(h_hat) or not torch.isfinite(h_hat).all():
-            raise ValueError("channel_estimate must be finite, complex and have the same shape as channel")
+
+        # Check estimated channel
+        if channel_estimate is not None:
+            h_hat = torch.as_tensor(channel_estimate, device=self.device)
+            if h_hat.shape != h.shape or not torch.is_complex(h_hat) or not torch.isfinite(h_hat).all():
+                raise ValueError("channel_estimate must be finite, complex and have the same shape as channel")
+        else:
+            h_hat = None
+
+        # Transform the other inputs to torch if needed
+        no_t = torch.as_tensor(no if no is not None else self.wireless.nob_ap, dtype=torch.float32, device=self.device)
+        tx_power_t = torch.as_tensor(tx_power if tx_power is not None else self.wireless.ue_power,
+                                     dtype=torch.float32, device=self.device)
+
+        results = self._core(h, tx_power_t, no_t, h_hat)
+        return tuple([r.cpu().numpy() for r in results])
+
+    def _core(self, h: torch.Tensor, tx_power: torch.Tensor, no: torch.Tensor, h_hat: torch.Tensor | None = None) -> tuple:
+        """All-tensor hot path -- this is the part that gets compiled in CUDA eventually."""
+        power = torch.reshape(torch.broadcast_to(tx_power, (self.ra_module.rg.num_tx,)), (1, -1, 1, 1, 1))
+        h_eff = torch.sqrt(power) * h
+        h_hat_eff = h_eff if h_hat is None else h_hat * torch.sqrt(power)
+
+        # Compute SINR assuming LMMSE equalization
+        sinr = self.posteq_sinr(h_eff, no, h_hat_eff)
+
+        # Create Link adaptation and simulate transmission
+        kwargs = dict(sinr=sinr,
+                      mcs_table_index=self.wireless.mcs_table_index,
+                      mcs_category=self.wireless.mcs_category)
+        mcs_index = self.illa(**kwargs)
+        decoded_bits, harq, sinr_eff, tbler, bler = self.phy_abstraction(mcs_index, **kwargs)
+
+        return (sinr, mcs_index.squeeze(-1), decoded_bits.squeeze(-1), harq.squeeze(-1),
+                sinr_eff.squeeze(-1), tbler.squeeze(-1), bler.squeeze(-1))
+
         slots = h.shape[0]
         powers = []
         for name, value, strictly_positive in (("tx_power", tx_power, False), ("no", no, True),
@@ -311,6 +363,7 @@ class SisoPhyAbstraction(TransmissionBase):
         mcs_index = self.illa(sinr=predicted_sinr, mcs_table_index=self.mcs_table_index,
                               mcs_category=self.mcs_category)
         decoded_bits, harq, sinr_eff, tbler, bler = self.phy_abstraction(mcs_index, **kwargs)
+
         # SYS interprets all-zero SINR as an unscheduled user. Here the batch
         # contains only occupied slots: a zero-power/deep-outage slot is a NACK.
         outage = ~torch.any(sinr > 0, dim=(1, 2, 3, 4))
@@ -320,6 +373,5 @@ class SisoPhyAbstraction(TransmissionBase):
         sinr_eff = torch.where(outage, 0, sinr_eff)
         tbler = torch.where(outage, 1, tbler)
         bler = torch.where(outage, 1, bler)
-        return SisoTransmissionResult(
-            sinr, mcs_index.squeeze(-1), decoded_bits.squeeze(-1), harq.squeeze(-1),
+        return (sinr, mcs_index.squeeze(-1), decoded_bits.squeeze(-1), harq.squeeze(-1),
             sinr_eff.squeeze(-1), tbler.squeeze(-1), bler.squeeze(-1))

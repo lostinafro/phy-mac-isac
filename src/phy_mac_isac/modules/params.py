@@ -75,21 +75,14 @@ scattering_pattern_dict = {
 
 
 # DEFAULT FOLDERS
-def _directory_from_env(name: str, default: str | Path) -> str:
-    """Return an absolute directory, expanding environment variables and ~."""
-    value = os.environ.get(name) or str(default)
-    expanded = os.path.expanduser(os.path.expandvars(value))
-    return str(Path(expanded).resolve())
-
-
 PACKAGE_ROOT = Path(__file__).resolve().parents[1]
 
-_DATA_HOME = Path(_directory_from_env("XDG_DATA_HOME", Path.home() / ".local" / "share"))
-_CACHE_HOME = Path(_directory_from_env("XDG_CACHE_HOME", Path.home() / ".cache"))
+_DATA_HOME = Path(ut.directory_from_env("XDG_DATA_HOME", Path.home() / ".local" / "share"))
+_CACHE_HOME = Path(ut.directory_from_env("XDG_CACHE_HOME", Path.home() / ".cache"))
 
-SCENE_FOLDER = _directory_from_env("PHY_MAC_ISAC_SCENE_DIR", PACKAGE_ROOT / "scenes")
-DATA_FOLDER = _directory_from_env("PHY_MAC_ISAC_DATA_DIR", _DATA_HOME / "phy_mac_isac" / "data")
-CACHE_FOLDER = _directory_from_env("PHY_MAC_ISAC_CACHE_DIR", _CACHE_HOME / "phy_mac_isac")
+SCENE_FOLDER = ut.directory_from_env("PHY_MAC_ISAC_SCENE_DIR", PACKAGE_ROOT / "scenes")
+DATA_FOLDER = ut.directory_from_env("PHY_MAC_ISAC_DATA_DIR", _DATA_HOME / "phy_mac_isac" / "data")
+CACHE_FOLDER = ut.directory_from_env("PHY_MAC_ISAC_CACHE_DIR", _CACHE_HOME / "phy_mac_isac")
 
 
 ## CLASSES

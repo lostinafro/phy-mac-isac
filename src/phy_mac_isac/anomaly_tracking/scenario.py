@@ -3,8 +3,8 @@ import numpy as np
 import torch
 from sionna.phy.channel import GenerateOFDMChannel
 from sionna.phy.channel.tr38901 import PanelArray, UMi
-from sionna.phy.ofdm import ResourceGrid
-
+from sionna.phy import config as sionna_config
+from phy_mac_isac.anomaly_tracking.allocation import TDDResourceAllocation
 from .. import utils as ut
 from ..modules.environment import SimulationEnvironment
 from ..modules.transmission import SisoPhyAbstraction
@@ -29,17 +29,24 @@ class AnomalyTrackingScenario(SimulationEnvironment):
             raise ValueError("AnomalyTrackingScenario uses load_scene=False and no RT scene")
         kwargs["load_scene"] = False
         super().__init__(*args, **kwargs)
-        self._scenario_ready = False
-        self._modules_ready = False
+
+        # Internal Attribute
+        self.channel_model = None
+        self.channel_generator = None
+        self._topology_batch_size = None
 
     def ue_random_positioning(self, height=anomaly_params.UE_HEIGHT,
                               min_dist=np.ones(2), margin=0.95):
         """Use the shared placement algorithm with the anomaly UE height."""
+        # TODO: Change this to cluster of UEs sampled as Gaussians around a random center
         return super().ue_random_positioning(height, min_dist, margin)
 
-    def setup_scenario(self, ap_pos=None, antenna_spacing=None, init_ue_pos=None,
-                       ue_vel_mean=anomaly_params.VEL_MAG,
-                       ue_vel_cov=anomaly_params.VEL_STD):
+    def setup_scenario(self,
+                       ap_pos: float | np.ndarray | None = None,
+                       antenna_spacing: float | None = None,
+                       init_ue_pos: np.ndarray | None = None,
+                       ue_vel_mean: np.ndarray | float= 0.,
+                       ue_vel_cov: np.ndarray | float = 0.):
         """Generate or restore base geometry; default AP height is 10 m (UMi).
 
         A zero velocity covariance must remain exactly zero, including the
@@ -47,50 +54,51 @@ class AnomalyTrackingScenario(SimulationEnvironment):
         """
         super().setup_scenario(
             ap_pos=10.0 if ap_pos is None else ap_pos,
-            antenna_spacing=antenna_spacing, init_ue_pos=init_ue_pos,
-            ue_vel_mean=ue_vel_mean, ue_vel_cov=ue_vel_cov)
-        if not self._load_env and np.all(np.asarray(ue_vel_cov) == 0):
-            self.geo.ue_vel_cov.fill(0)
-        self._scenario_ready = True
+            antenna_spacing=antenna_spacing,
+            init_ue_pos=init_ue_pos,
+            ue_vel_mean=ue_vel_mean,
+            ue_vel_cov=ue_vel_cov)
 
-    def setup_modules(self, ra_algorithm=None, transmission_module=None,
-                      tracker_module=None, performance=None, *, device="cpu"):
+    def setup_modules(self,
+                      ra_module = None,
+                      transmission_module = None,
+                      tracker_module = None,
+                      performance = None,
+                      device: torch.device | str = "cpu"):
         """Wire the shared module slots and create a geometry-based UMi channel.
 
         Allocation is supplied externally, so no allocator/tracker is required.
         Optional injected modules are retained using the base setup_modules API.
         """
-        if not self._scenario_ready:
-            raise RuntimeError("Call setup_scenario() before setup_modules()")
-        self.device = torch.device(device)
-        self.resource_grid = ResourceGrid(
-            num_ofdm_symbols=self.T, fft_size=self.F,
-            subcarrier_spacing=self.wireless.sc_spacing,
-            num_tx=1, num_streams_per_tx=1,
-            cyclic_prefix_length=int(round(self.wireless.cp_time * self.wireless.bw)),
-            pilot_pattern="kronecker",
-            pilot_ofdm_symbol_indices=[0] if self.T < 6 else [2, self.T - 3],
-            device=str(self.device))
-        array_kwargs = dict(num_rows_per_panel=1, num_cols_per_panel=1,
-                            polarization="single", polarization_type="V",
-                            antenna_pattern="omni", carrier_frequency=self.wireless.carrier,
-                            device=str(self.device))
-        self.channel_model = UMi(
-            carrier_frequency=self.wireless.carrier, o2i_model="low",
-            ut_array=PanelArray(**array_kwargs), bs_array=PanelArray(**array_kwargs),
-            direction=self.wireless.direction, enable_pathloss=True,
-            enable_shadow_fading=self.wireless.enable_shadow_fading,
-            device=str(self.device))
-        self.channel_generator = GenerateOFDMChannel(
-            self.channel_model, self.resource_grid,
-            normalize_channel=False, device=str(self.device))
+        if ra_module is None:
+            ra_module = TDDResourceAllocation(self.c, self.wireless)
+
         if transmission_module is None:
             transmission_module = SisoPhyAbstraction(
-                self.resource_grid, self.device, bler_target=self.wireless.bler_target,
-                direction=self.wireless.direction, mcs_table_index=self.wireless.mcs_table_index)
-        super().setup_modules(ra_algorithm, transmission_module, tracker_module, performance)
-        self._topology_batch_size = None
-        self._modules_ready = True
+                self.resource_grid,
+                self.device,
+                bler_target=self.wireless.bler_target,
+                direction=self.wireless.direction,
+                mcs_table_index=self.wireless.mcs_table_index,
+                device=str(device),
+            )
+
+        super().setup_modules(ra_module, transmission_module, tracker_module, performance)
+
+        self.channel_model = UMi(
+            carrier_frequency=self.wireless.carrier, o2i_model="low",
+            ut_array=self._default_mimo_array(self.geo.antenna_spacing),
+            bs_array=self._default_mimo_array(self.geo.antenna_spacing),
+            direction=self.wireless.direction,
+            enable_pathloss=True,
+            enable_shadow_fading=self.wireless.enable_shadow_fading,
+        )
+
+        self.channel_generator = GenerateOFDMChannel(
+            self.channel_model,
+            self.ra_module.rg,
+            normalize_channel=False
+        )
 
     def _set_channel_topology(self, ue_ids):
         """One actual AP/UE pair per occupied slot, from the current frame."""
@@ -183,30 +191,66 @@ class AnomalyTrackingScenario(SimulationEnvironment):
                           channel_estimate, self.wireless.channel_estimation_error_variance,
                           self.frame)
 
+    def _default_mimo_array(self, antenna_spacing: float):
+        return PanelArray(
+            num_rows_per_panel=self.M_h,
+            num_cols_per_panel=self.M_v,
+            polarization="single",
+            polarization_type="V",
+            element_vertical_spacing=antenna_spacing,
+            element_horizontal_spacing=antenna_spacing,
+            antenna_pattern="omni",
+            carrier_frequency=self.wireless.carrier,
+            device=str(self.device))
 
-def run_episode(episode, allocations, env_kwargs=None, device="cpu") -> list[StepResult]:
+
+def generate_ep_environment(episode,
+                            env_kwargs=None,
+                            device: str | torch.device | None = None) -> AnomalyTrackingScenario:
     """Run an external allocation sequence through the shared environment lifecycle.
 
     ``allocations`` yields one vector per frame. No MAC decisions or semantic
     tracking metrics are fabricated here. Save the returned StepResults in the
     caller, together with env.c/wireless/geo when managing a scenario directly.
     """
-    env_kwargs = dict(env_kwargs or {})
+    ### Set up machine variables
+    if device is None:
+        device = "cpu"
+        sionna_config.device = "cpu"
+
+    sionna_config.device = str(device)
+    device = torch.device(device)
+
+    if device.type == "cuda" and not torch.cuda.is_available():
+        raise RuntimeError(f"CUDA was requested ({device}), but CUDA is unavailable")
+
+    # Take the kwargs
+    env_kwargs = env_kwargs or {}
+
+    # Validate the complete argument dictionary before routing it to each stage.
     ut.validate_kwargs(
-        env_kwargs, AnomalyTrackingScenario.shared_type, AnomalyTrackingScenario.wireless_type,
-        SimulationEnvironment, AnomalyTrackingScenario.setup_scenario,
-        exclude={"self", "episode", "shared_params", "wireless_params", "c"}, name="env_kwargs")
-    constructor = ut.filter_call_kwargs(SimulationEnvironment, **env_kwargs)
-    constructor.setdefault("load_env", False)
-    env = AnomalyTrackingScenario(
-        episode, ut.filter_call_kwargs(AnomalyTrackingScenario.shared_type, **env_kwargs),
-        ut.filter_call_kwargs(AnomalyTrackingScenario.wireless_type, **env_kwargs), **constructor)
+        env_kwargs,
+        AnomalyTrackingScenario.shared_type,
+        AnomalyTrackingScenario.wireless_type,
+        SimulationEnvironment,
+        AnomalyTrackingScenario.setup_scenario,
+        exclude={"self", "episode", "shared_params", "wireless_params", "c"},
+        name="env_kwargs"
+    )
+    # --- Build environment ---
+    sha_kwargs = ut.filter_call_kwargs(AnomalyTrackingScenario.shared_type, **env_kwargs)
+    wir_kwargs = ut.filter_call_kwargs(SimulationEnvironment.wireless_type, **env_kwargs)
+    ini_kwargs = ut.filter_call_kwargs(SimulationEnvironment, **env_kwargs)
+    env = AnomalyTrackingScenario(episode, sha_kwargs, wir_kwargs, **ini_kwargs)
+    # Setup scenario
     env.setup_scenario(**ut.filter_call_kwargs(env.setup_scenario, **env_kwargs))
+    # Setup default modules
     env.setup_modules(device=device)
-    return [env.step(allocation) for allocation in allocations]
+
+    return env
 
 
 if __name__ == "__main__":
-    results = run_episode(1, [np.array([0, -1, 1])] * 2,
-                          env_kwargs={"num_ue": 3, "num_slots": 3, "num_frames": 2})
+    results = generate_ep_environment(1, [np.array([0, -1, 1])] * 2,
+                                      env_kwargs={"num_ue": 3, "num_slots": 3, "num_frames": 2})
     print([result.decoded for result in results])

@@ -2,7 +2,7 @@ from abc import ABC, abstractmethod
 import numpy as np
 import sionna.phy as phy
 
-from .params import SharedParams, WirelessParams, GeometryParams
+from .params import SharedParams, WirelessParams
 
 
 class ResourceAllocationBase(ABC):
@@ -15,12 +15,15 @@ class ResourceAllocationBase(ABC):
     Subclasses implement the model-specific `slot_ue_association_mask`, and `__call__` methods. Optionally, custom
     `ap_ue_association_mask`, `_pilot_ofdm_symbol_indices`, and `rx_tx_association` methods can be implemented.
     """
-    def __init__(self, c: SharedParams, wireless: WirelessParams, geo: GeometryParams):
+    def __init__(self, c: SharedParams, wireless: WirelessParams):
         self.c = c
         self.wireless = wireless
-        self.geo = geo
 
-        self.rg = phy.ofdm.ResourceGrid(
+        self.rg = self._set_resource_grid()
+        self.sm = self._set_stream_manager()
+
+    def _set_resource_grid(self):
+        return phy.ofdm.ResourceGrid(
             num_ofdm_symbols=self.c.num_sym,
             fft_size=self.c.num_scs,
             subcarrier_spacing=self.wireless.sc_spacing,
@@ -31,14 +34,15 @@ class ResourceAllocationBase(ABC):
             pilot_ofdm_symbol_indices=self.pilot_ofdm_symbol_indices(),
         )
 
-        self.sm = phy.mimo.StreamManagement(
+    def _set_stream_manager(self):
+        return phy.mimo.StreamManagement(
             rx_tx_association=self._rx_tx_association(),
             num_streams_per_tx=1,
         )
 
     def _cp_length_samples(self) -> int:
         """Cyclic prefix length in samples, consistent with `self.wireless.cp_time`."""
-        return int(round(self.wireless.cp_time * self.wireless.sc_spacing * self.c.num_scs))
+        return int(round(self.wireless.cp_time * self.wireless.bw))
 
     def pilot_ofdm_symbol_indices(self) -> list:
         """Default two-pilot Kronecker pattern: one early, one late symbol in the slot
@@ -137,3 +141,49 @@ class ResourceAllocationBase(ABC):
         :returns: tuple containing, e.g., (slot_ue_association_mask: np.ndarray, ...)
         """
         raise NotImplementedError
+
+class RoundRobinAllocation(ResourceAllocationBase):
+    """RoundRobin OFDM resource allocation.
+
+    Builds the sionna.phy `ResourceGrid` (time/frequency resource description),  a
+    `StreamManagement` (rx/tx stream association).
+    Moreover, it creates boolean np.ndarrays for `slot-ue allocation mask` and `ue-ap allocation masks`.
+
+    :param c: SharedParams, shared scenario parameters (num_ue, num_ap, num_sym, num_scs, ...).
+    :param wireless: WirelessParams, OFDM numerology parameters (sc_spacing, cp_time, ...).
+    """
+
+    def __init__(self, c: SharedParams, wireless: WirelessParams):
+        super().__init__(c, wireless)
+
+        # Internal attributes
+        self._last_allocated_ues = None
+
+    def slot_ue_association_mask(self) -> np.ndarray:
+        """Orthogonal round-robin slot allocation: UE `u` is scheduled in slot `u % S` and accounting for the last
+        allocation made.
+
+        :returns: np.ndarray[bool], shape (S, U), True where UE u is allocated to slot s, else False.
+        """
+        try:
+            first_ue = (self._last_allocated_ues[-1] + 1) % self.c.num_ue
+        except TypeError:
+            first_ue = 0
+        mask = np.roll(np.eye(self.c.num_slots, self.c.num_ue, dtype=bool), first_ue, axis=1)
+        self._last_allocated_ues = np.where(mask)[1]
+        return mask.astype(bool)
+
+    def __call__(self, frame: int, **kwargs) -> np.ndarray:
+        """Call the association for the current frame.
+
+        :returns: np.ndarray[bool], ue-slot-association mask.
+        """
+        if frame < 0:
+            raise ValueError("Frame index cannot be negative.")
+        # prior = self.estimate.ue_pos_hat[frame]
+        return self.slot_ue_association_mask()
+
+available_methods = {
+    "Abstract": ResourceAllocationBase,
+    "MAF": RoundRobinAllocation
+}

@@ -8,7 +8,7 @@ import shapely as sha
 import sionna.rt as rt
 import sionna.phy as phy
 
-from . import resource_allocation as ra
+from .resource_allocation import ResourceAllocationBase, available_methods, RoundRobinAllocation
 from .transmission import TransmissionBase
 from .trackers import TrackerBase
 from .theory import PerformanceBase
@@ -155,32 +155,40 @@ class SimulationEnvironment:
 
         # RadioMap and RayTracer (only if scene is loaded)
         if self._load_scene:
-            self.rm: rt.RadioMap = None             # Instance of a RadioMap. Set in _setup_scene()
+            self.rm: rt.RadioMap | None = None             # Instance of a RadioMap. Set in _setup_scene()
             self.rm_solver = rt.RadioMapSolver()    # Solver module for RadioMap computation
             self.path_solver = rt.PathSolver()      # Solver module for path evaluation in the ray tracer
 
         # Resource allocation, transmission and tracker modules
-        self.ra_method: type[ra.ResourceAllocationBase] = None    # Resource allocation module, giving the allocation on a frame
-        self.transmission_module: type[TransmissionBase] = None   # Transmission module, simulating wireless signal processing
-        self.tracker_module: type[TrackerBase] = None             # Tracker module, needed for location tracking
+        self.ra_module: type[ResourceAllocationBase] | None = None    # Resource allocation module, giving the allocation on a frame
+        self.transmission_module: type[TransmissionBase] | None = None   # Transmission module, simulating wireless signal processing
+        self.tracker_module: type[TrackerBase] | None = None             # Tracker module, needed for location tracking
 
         # Theoretical evaluation modules
-        self.performance: type[PerformanceBase] = None   # Module for theoretic performance evaluation
+        self.performance: type[PerformanceBase] | None = None   # Module for theoretic performance evaluation
 
         # Set up the environment at frame -1 (last element for the dataclasses attributes)
         self.frame = -1             # Denote the current number of the frame
         self.frame_sync = 0         # Denote the last frame in which PRACH synchronization was performed
 
+        # Set internal variable for checking
+        self._scenario_ready = False
+        self._modules_ready = False
+
     def setup_modules(self,
-                      ra_algorithm: type[ra.ResourceAllocationBase],
-                      transmission_module: type[TransmissionBase],
-                      tracker_module: type[TrackerBase],
-                      performance: type[PerformanceBase]):
+                      ra_module: type[ResourceAllocationBase] | None,
+                      transmission_module: type[TransmissionBase] | None,
+                      tracker_module: type[TrackerBase] | None,
+                      performance: type[PerformanceBase] | None):
         """Set scheduling, transmission, tracking, and evaluation modules to be used."""
-        self.ra_method = ra_algorithm
+        if not self._scenario_ready:
+            raise RuntimeError("Call setup_scenario() before setup_modules()")
+
+        self.ra_module = ra_module
         self.transmission_module = transmission_module
         self.tracker_module = tracker_module
         self.performance = performance
+        self._modules_ready = True
 
     def setup_scenario(self,
                        ap_pos: float | np.ndarray | None = None,
@@ -259,9 +267,9 @@ class SimulationEnvironment:
             if isinstance(ue_vel_cov, np.ndarray):
                 assert ue_vel_cov.shape == (self.U, 3, 3), "If an array, ue_vel_cov must have shape (U, 3, 3)"
             else:
-                # Set a standard diagonal matrix for all UE with sigma_x, sigma_y = V_max and sigma_z = 1e-9
+                # Set a standard diagonal matrix for all UE with sigma_x, sigma_y = V_max and sigma_z = 0
                 ue_vel_cov = ue_vel_cov ** 2 * np.repeat(np.array(np.eye(3))[np.newaxis], self.U, axis=0)
-                ue_vel_cov[:, 2, 2] = 1e-9
+                ue_vel_cov[:, 2, 2] = 0
 
             # Update geometry variables
             self.geo.update(self.frame,
@@ -300,9 +308,12 @@ class SimulationEnvironment:
             self.scene_fig.canvas.draw_idle()
             plt.pause(0.001)
 
+        # Notify readiness
+        self._scenario_ready = True
+
     def show_environment(self,
                          camera: rt.Camera | None = None,
-                         show_devices: bool = True,
+                         show_nodes: bool = True,
                          paths: rt.Paths | None = None,
                          figsize: tuple = (14, 7),
                          fig: plt.Figure | None = None) -> plt.Figure:
@@ -310,7 +321,7 @@ class SimulationEnvironment:
         rendering (if present) into a single Figure with two side-by-side panels.
 
         :param camera: sionna.rt.Camera, If None, uses `self.default_camera`.
-        :param show_devices: bool, whether to show UEs/APs in the render. Defaults to True.
+        :param show_nodes: bool, whether to show UEs/APs in the render. Defaults to True.
         :param paths: rt.Paths, propagation paths to overlay on the render.
         :param figsize: size of the combined figure.
         :param fig: plt.Figure, if None, a new Figure is created. Otherwise, the existing Figure is reused and cleared.
@@ -331,7 +342,7 @@ class SimulationEnvironment:
         # Right panel: Mitsuba ray-traced rendering
         if hasattr(self, 'scene') and self._load_scene:
             camera = camera or self.default_camera
-            render_kwargs = dict(camera=camera, show_devices=show_devices,
+            render_kwargs = dict(camera=camera, show_devices=show_nodes,
                                  resolution=(1024, 1024), return_bitmap=True)
             if paths is not None:
                 render_kwargs["paths"] = paths
@@ -542,8 +553,10 @@ class SimulationEnvironment:
         # Return tuple
         return ap_cen_pos, ap_rotation, ap_ant_pos
 
-    def ue_random_positioning(self, height: float | np.ndarray = params.UE_HEIGHT,
-                              min_dist: np.ndarray = np.ones(2), margin: float = 0.95) -> np.ndarray:
+    def ue_random_positioning(self,
+                              height: float | np.ndarray = params.UE_HEIGHT,
+                              min_dist: np.ndarray = np.ones(2),
+                              margin: float = 0.95) -> np.ndarray:
         """Generate UE random positions with minimum distance >= min_dist.
         Modified version of https://stackoverflow.com/questions/27499139/how-can-i-set-a-minimum-distance-constraint-for-generating-points-with-numpy-ran
 
@@ -871,6 +884,7 @@ class SimulationEnvironment:
         return mesh_path
 
     def _default_mimo_array(self, antenna_spacing: float):
+        # TODO: check correct dimensions on rows and columns
         return rt.PlanarArray(num_rows=self.M_h,
                               num_cols=self.M_v,
                               vertical_spacing=antenna_spacing,
@@ -880,6 +894,9 @@ class SimulationEnvironment:
 
     def step(self, *args, **kwargs):
         """Evaluates operations in a frame. The base class just moves the UEs."""
+        if not self._modules_ready:
+            raise RuntimeError("Call setup_scenario() and setup_modules() before step()")
+
         ### Update frame and geometry
         # Start by updating the frame number
         self.frame += 1
@@ -892,7 +909,7 @@ class SimulationEnvironment:
             self.scene_fig.canvas.draw_idle()
             plt.pause(0.001)
         except Exception as e:
-            print(f"Probably the figure dies in some way. Was it you?: {e}")
+            print(f"Probably the figure died in some way. Was it you?: {e}")
 
         return True
 
@@ -934,7 +951,7 @@ class SimulationEnvironment:
 
 
 def run_episode(episode: int,
-                ra_method: type[ra.ResourceAllocationBase],
+                ra_method: type[ResourceAllocationBase],
                 ra_kwargs: dict | None = None,
                 env_kwargs: dict | None = None,
                 step_kwargs: dict | None = None,
@@ -951,7 +968,7 @@ def run_episode(episode: int,
         this run's output filename (must be the first positional argument).
     :param ra_method: type[ResourceAllocationBase], a class from resource_allocation.py
         (not an instance -- it's constructed here once env.c/wireless/geo/estimate exist),
-        e.g. `ra.RoundRobinAllocation` (must be the second positional argument).
+        e.g. `RoundRobinAllocation` (must be the second positional argument).
     :param ra_kwargs: dict | None, extra kwargs forwarded to `ra_method`'s constructor.
     :param env_kwargs: dict | None, kwargs forwarded to `SimulationEnvironment` methods
         (num_ue, num_ap, area_coordinates, lo_ppm, ue_power, ...). `episode` is filled in
@@ -984,7 +1001,6 @@ def run_episode(episode: int,
     step_kwargs = step_kwargs or {}
 
     # Validate the complete argument dictionary before routing it to each stage.
-    # Dataclass types come from the selected scenario so subclass fields are supported.
     ut.validate_kwargs(
         env_kwargs,
         SimulationEnvironment.shared_type,
@@ -1005,6 +1021,7 @@ def run_episode(episode: int,
     sha_kwargs = ut.filter_call_kwargs(SimulationEnvironment.shared_type, **env_kwargs)
     wir_kwargs = ut.filter_call_kwargs(SimulationEnvironment.wireless_type, **env_kwargs)
     ini_kwargs = ut.filter_call_kwargs(SimulationEnvironment, **env_kwargs)
+    # TODO: check the following
     ini_kwargs.setdefault("env_dirpath", save_dirpath)
     env = SimulationEnvironment(episode, sha_kwargs, wir_kwargs, **ini_kwargs)
 
@@ -1027,7 +1044,7 @@ def run_episode(episode: int,
     # --- Save data ---
     save_path = None
     if save:
-        ra_method_label = next(key for key, val in ra.available_methods.items() if val == ra_method)
+        ra_method_label = next(key for key, val in available_methods.items() if val == ra_method)
         filename = os.path.join(save_dirpath, f"{ra_method_label}_ep{episode:04d}.npz")
         save_path = params.save_params_npz(filename, c=env.c, wireless=env.wireless, geo=env.geo,
                                            estimate=env.estimate)
@@ -1038,15 +1055,12 @@ def run_episode(episode: int,
     return summary
 
 
-results_labels = ["avg_se_achievable", "avg_se_set", "avg_queue", "avg_misclassification", "avg_risk_predicted", "avg_risk_hat"]
-
-
 if __name__ == "__main__":
     num_ue = 12
     avg_datasize, queue_max = params.arrival_rate_init(avg_se=2, num_ue=num_ue)
     env_args = {"debugging": True, "num_frames": 50, "num_ue": num_ue, "traffic_avg": avg_datasize,
                 "queue_max": queue_max, "num_rgions": 32, "ue_vel_mean": 5}
     step_args = {"cfo": False}
-    res = run_episode(1, ra.RoundRobinAllocation, env_kwargs=env_args, step_kwargs=step_args)
+    res = run_episode(1, RoundRobinAllocation, env_kwargs=env_args, step_kwargs=step_args)
     print(res)
 

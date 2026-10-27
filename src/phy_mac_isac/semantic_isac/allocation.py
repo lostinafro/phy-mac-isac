@@ -18,9 +18,10 @@ class SemanticResourceAllocationBase(ResourceAllocationBase):
     """
     def __init__(self, c: SharedParams, wireless: WirelessParams,
                  geo: GeometryParams, estimate: EstimationParams):
-        super().__init__(c, wireless, geo)
+        super().__init__(c, wireless)
 
         # Internal attributes
+        self.geo = geo
         self.estimate = estimate
 
         self._last_allocated_ues = None  # np.zeros(self.c.num_slots, dtype=np.int32)
@@ -451,10 +452,11 @@ class QueueBasedAllocation(SemanticResourceAllocationBase):
 
 
 
-available_methods = {"MAF": RoundRobinAllocation,
-                     "SRI": SemanticRiskAllocation,
-                     "SRL": SemanticRiskAllocationNoComm,
-                     "PBI": PebBasedAllocation,
-                     "QBC": QueueBasedAllocation,
-                     "PBL": PebBasedAllocationNoComm,
-                     }
+available_methods = {
+    "MAF": RoundRobinAllocation,
+     "SRI": SemanticRiskAllocation,
+     "SRL": SemanticRiskAllocationNoComm,
+     "PBI": PebBasedAllocation,
+     "QBC": QueueBasedAllocation,
+     "PBL": PebBasedAllocationNoComm,
+     }

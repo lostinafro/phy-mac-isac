@@ -3,14 +3,13 @@ import numpy as np
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 import math
-
 import torch
 
 if TYPE_CHECKING:
     from ..modules.transmission import SisoTransmissionResult
 
 from .. import utils as ut
-from ..modules.params import SCENE_FOLDER, DATA_FOLDER, CACHE_FOLDER, _directory_from_env
+from ..modules.params import SCENE_FOLDER, DATA_FOLDER, CACHE_FOLDER
 from ..modules.params import SharedParams as BaseShared
 from ..modules.params import WirelessParams as BaseWireless
 
@@ -21,8 +20,6 @@ NUM_EP = int(1e2)
 NUM_AP = 1
 NUM_ANT = 1
 NUM_UE = 100
-VEL_MAG = 0.                 # [m/s]
-VEL_STD = 0.                 # [m/s]
 NUM_REGIONS = 1
 UE_HEIGHT = 1             # [m]
 
@@ -35,6 +32,7 @@ NUM_SLOTS = 20
 NUM_FRAMES = 100
 PPM_XO = 0.     # Perfect synchronization is assumed among nodes and AP
 UE_POW = ut.dbm2watt(0)
+TARGET_BLER = 0.03
 
 
 # RayTracer and RadioMap parameters
@@ -113,26 +111,34 @@ class WirelessParams(BaseWireless):
     # Geometry-based TR 38.901 UMi channel and SYS abstraction settings.
     direction: str = "uplink"
     mcs_table_index: int = 1
-    bler_target: float = 0.1
+    bler_target: float = TARGET_BLER
     force_los: bool | None = None
     enable_shadow_fading: bool = False
     # Absolute complex-CFR coefficient MSE: E[abs(h_hat - h)**2].
     channel_estimation_error_variance: float = 0.0
 
+    # To be computed
+    mcs_category: int = field(init=False)
+
     def __post_init__(self):
         super().__post_init__()
+
+        # Check input
         if self.direction not in ("uplink", "downlink"):
             raise ValueError("direction must be uplink or downlink")
         tables = (1, 2) if self.direction == "uplink" else (1, 2, 3, 4)
         if self.mcs_table_index not in tables or not 0 < self.bler_target < 1:
             raise ValueError("Invalid MCS table or BLER target")
+        self.mcs_category = int(self.direction == "downlink")
+        if not 0 < self.bler_target < 1:
+            raise ValueError("bler_target must lie strictly between 0 and 1")
         if self.force_los is not None and not isinstance(self.force_los, bool):
             raise ValueError("force_los must be None or bool")
         variance = self.channel_estimation_error_variance
         if not math.isfinite(variance) or variance < 0:
             raise ValueError("channel_estimation_error_variance must be finite and nonnegative")
 
-
+# Todo: rename into metrics using a subclass from the original
 @dataclass(frozen=True)
 class StepResult:
     """Compact occupied-slot channels and PHY results for a single frame.

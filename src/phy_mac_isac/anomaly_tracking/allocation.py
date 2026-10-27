@@ -1,4 +1,5 @@
 import numpy as np
+from sionna.phy.ofdm import ResourceGrid
 
 from ..modules.resource_allocation import ResourceAllocationBase
 from ..modules.params import GeometryParams
@@ -11,15 +12,22 @@ class TDDResourceAllocation(ResourceAllocationBase):
 
     It just takes the users scheduled for the pull and push sub-frame and generates the OFDM-like allocation.
     """
-    def __init__(self, c: AnomalySharedParams, wireless: AnomalyWirelessParams, geo: GeometryParams):
-        super().__init__(c, wireless, geo)
-
-        # Impose single UE per resource
-        self.rg.num_tx = 1
+    def __init__(self, c: AnomalySharedParams, wireless: AnomalyWirelessParams):
+        super().__init__(c, wireless)
 
 
-        # Allocation now
-        self.pull_push_outcome = None
+    def _set_resource_grid(self):
+        return ResourceGrid(
+            num_ofdm_symbols=self.c.num_sym,
+            fft_size=self.c.num_scs,
+            subcarrier_spacing=self.wireless.sc_spacing,
+            num_tx=1,
+            num_streams_per_tx=1,
+            cyclic_prefix_length=self._cp_length_samples(),
+            pilot_pattern="kronecker",
+            pilot_ofdm_symbol_indices=self.pilot_ofdm_symbol_indices(),
+        )
+
 
     def _rx_tx_association(self) -> np.ndarray:
         """Return the association between the receiver and transmitter nodes, assuming a single transmitter per slot.

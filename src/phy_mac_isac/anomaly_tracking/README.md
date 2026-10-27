@@ -34,7 +34,7 @@ subproject, which override the shared classes in `modules/params.py`.
 container in `anomaly_tracking/parameters.py`; no separate scenario-input
 configuration dataclass is used. Its import from `scenario` also remains valid.
 The package exports `AnomalyTrackingScenario`, `SharedParams`, `WirelessParams`,
-`StepResult`, and the allocation-driven `run_episode` helper.
+`StepResult`, and the allocation-driven `generate_ep_environment` helper.
 
 ## Geometry and channel
 
@@ -139,11 +139,12 @@ remain with the caller; there is no automatic HARQ loop.
 For a precomputed allocation sequence:
 
 ```python
-from phy_mac_isac.anomaly_tracking import run_episode
-results = run_episode(
-    1, [[0, -1, 1], [2, 0]],
-    env_kwargs={"num_ue": 3, "num_frames": 2, "num_slots": 3},
-    device="cpu",
+from phy_mac_isac.anomaly_tracking import generate_ep_environment
+
+results = generate_ep_environment(
+  1, [[0, -1, 1], [2, 0]],
+  env_kwargs={"num_ue": 3, "num_frames": 2, "num_slots": 3},
+  device="cpu",
 )
 ```
 

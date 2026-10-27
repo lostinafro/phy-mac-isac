@@ -8,7 +8,7 @@ import torch
 from sionna.phy import config as sionna_config
 
 from phy_mac_isac.anomaly_tracking import (
-    AnomalyTrackingScenario, SharedParams, WirelessParams, StepResult, run_episode,
+    AnomalyTrackingScenario, SharedParams, WirelessParams, StepResult, generate_ep_environment,
 )
 from phy_mac_isac.modules.environment import SimulationEnvironment
 from phy_mac_isac.modules.params import GeometryParams
@@ -170,7 +170,7 @@ class AnomalyTrackingTests(unittest.TestCase):
         self.assertTrue(torch.isfinite(result.transmission.tbler).all())
 
     def test_allocation_driven_runner(self):
-        results = run_episode(2, [[0, -1], [1]], env_kwargs={"num_ue": 2, "num_frames": 2})
+        results = generate_ep_environment(2, [[0, -1], [1]], env_kwargs={"num_ue": 2, "num_frames": 2})
         self.assertEqual([r.frame for r in results], [0, 1])
 
     def test_singular_mobility_covariances_and_legacy_cholesky(self):
