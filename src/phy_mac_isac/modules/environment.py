@@ -520,29 +520,27 @@ class SimulationEnvironment:
 
         # Create the base array through Sionna built-in method
         ap_array = self._default_mimo_array(antenna_spacing)
+        ap_array_pointing = np.array([1, 0, 0])     # Default panel pointing in Sionna is +X axis
 
-        ## Point the array to the center of the environment
+        ## Point the array to the center of the environment through Rodriguez formula
         # Direction vector from the array to the center
         direction = self.geo.center - ap_cen_pos
-        direction = direction / np.linalg.norm(direction, axis=1)[:, np.newaxis]  # Normalize
+        distance = np.linalg.norm(direction, axis=1)
+        if np.any(distance == 0):
+            raise ValueError("AP position coincides with its pointing target")
 
-        # Default boresight in Sionna is +Z axis: [0, 0, 1]
-        boresight = np.array([0, 0, 1])
-
-        # Compute the rotation matrix to align boresight with the direction using the Rodrigues' rotation formula
-        # Axis of rotation: cross product of boresight and direction
-        axis = np.cross(boresight, direction)
+        # Axis of rotation: cross product of AP's array pointing and direction
+        axis = np.cross(ap_array_pointing, direction)
         axis_norm = np.linalg.norm(axis, axis=1, keepdims=True)
         axis = np.divide(axis, axis_norm, out=np.zeros_like(axis), where=axis_norm > 1e-12)
-        # Parallel/antiparallel boresights need any perpendicular axis; the
-        # angle below distinguishes identity from a half turn.
-        axis[axis_norm[:, 0] <= 1e-12] = [1, 0, 0]
-        # Angle of rotation: angle between boresight and direction
-        angle = np.arccos(np.clip(direction @ boresight[:, np.newaxis], -1.0, 1.0))
+        # Directions that are parallel/antiparallel to the pointing need any perpendicular axis
+        axis[axis_norm[:, 0] <= 1e-12] = [0, 0, 1]
+        # Angle of rotation: angle between AP's array pointing and direction
+        angle = np.arccos(np.clip(direction @ ap_array_pointing[:, np.newaxis], -1.0, 1.0))
         # Create rotation matrix
         ap_rotation = Rotation.from_rotvec(axis * angle)
 
-        ant_relative_positions = np.ones((self.L, self.M, 3))
+        ant_relative_positions = np.empty((self.L, self.M, 3))
         # For each array, rotate it to face the center using sionna built-in methods with euler angles from rotation class
         for l in range(self.L):
             ant_relative_positions[l, :, :] = np.array(ap_array.rotate(self.wireless.wavelength, mi.Point3f(ap_rotation.as_euler('zyx')[l]))).T
@@ -745,7 +743,7 @@ class SimulationEnvironment:
 
         # Add APs as receivers, oriented per ap_orientation (z-boresight convention, see place_aps)
         for l in range(self.L):
-            orientation = self.geo.ap_orientation[l].as_euler('zyx')
+            orientation = self.geo.ap_orientation[l].as_euler('ZYX')
             self.scene.add(rt.Receiver(name=f"ap_{l}",
                                        position=self.geo.ap_location[l],
                                        orientation=orientation))
@@ -885,8 +883,8 @@ class SimulationEnvironment:
 
     def _default_mimo_array(self, antenna_spacing: float):
         # TODO: check correct dimensions on rows and columns
-        return rt.PlanarArray(num_rows=self.M_h,
-                              num_cols=self.M_v,
+        return rt.PlanarArray(num_rows=self.M_v,
+                              num_cols=self.M_h,
                               vertical_spacing=antenna_spacing,
                               horizontal_spacing=antenna_spacing,
                               pattern="hw_dipole",
