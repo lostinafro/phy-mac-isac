@@ -1,6 +1,7 @@
 # Geometry: polygons, Voronoi tessellation, coordinate transforms, meshes, scenes
 import numpy as np
 from scipy.spatial import ConvexHull, Voronoi
+from scipy.spatial.transform import Rotation
 import shapely as sha
 from shapely.geometry import Polygon, MultiPolygon
 import shapely.ops as shops
@@ -11,6 +12,82 @@ import mitsuba as mi
 import hashlib
 import json
 
+
+def rodriguez_rotation(old_orientation: np.ndarray,
+                       new_orientations: np.ndarray,
+                       tol: float = 1e-12) -> Rotation:
+    """Create the rotation able to rotate old directions onto new directions.
+
+    :param old_orientation: (3,) or (N, 3), allowing one starting direction to broadcast.
+    :param new_orientations: (3,) or (N, 3), allowing one direction to broadcast.
+
+    :returns: A single Rotation when both inputs are (3,), otherwise a stack of rotations.
+    """
+    a = np.asarray(old_orientation, dtype=float)
+    b = np.asarray(new_orientations, dtype=float)
+
+    for vector in (a, b):
+        if vector.shape[-1] != 3:
+            raise ValueError("Inputs must have shape[-1] == 3")
+        if not np.isfinite(vector).all():
+            raise ValueError("Inputs must be finite")
+
+    # Check if a single rotation matrix is requested
+    single = a.ndim == b.ndim == 1
+    # Broadcast inputs to match dimensions
+    a, b = np.broadcast_arrays(np.atleast_2d(a), np.atleast_2d(b))
+
+    # Compute norms for normalization
+    norm_a = np.linalg.norm(a, axis=-1, keepdims=True)
+    norm_b = np.linalg.norm(b, axis=-1, keepdims=True)
+
+    # Check for zero vectors
+    if np.any(norm_a == 0) or np.any(norm_b == 0):
+        raise ValueError("Zero vectors have no orientation")
+
+    # Normalize vectors
+    a, b = a / norm_a, b / norm_b
+
+    # Axis of rotation: normalized cross product of old and new orientations
+    # Note that a and b have been already normalized and so the norm of the cross returns
+    # the sin of the angle between a and b
+    cross = np.cross(a, b)
+    sin_angle = np.linalg.norm(cross, axis=-1)
+    axis = np.divide(cross, sin_angle[:, None], out=np.zeros_like(cross), where=sin_angle[:, None] > tol)
+
+    # Cos of rotation angle from the old and the new orientations
+    cos_angle = np.clip(np.sum(a * b, axis=-1), -1.0, 1.0)
+
+    # Angle is just the arctan2 of the tan (done like this for numerical stability near 0 and pi)
+    angle = np.arctan2(sin_angle, cos_angle)
+
+    ## Managing special cases
+    # Nearly parallel directions: cross will be zero. The rotation angle should also be zero.
+    aligned = sin_angle <= tol
+    angle[aligned] = 0.0
+    # Nearly antiparallel directions: half-turn about any perpendicular axis.
+    opposite = aligned & (cos_angle < 0)
+    # Choose the coordinate axis least aligned with each original vector.
+    basis = np.eye(3)[np.argmin(np.abs(a[opposite]), axis=-1)]
+    perpendicular = np.cross(a[opposite], basis)
+    # Compute axis as the normalized perpendicular direction and the half-turn as the angle
+    axis[opposite] = perpendicular / np.linalg.norm(perpendicular, axis=-1, keepdims=True)
+    angle[opposite] = np.pi
+
+    rotvec = axis * angle[:, None]
+    return Rotation.from_rotvec(rotvec[0] if single else rotvec)
+
+
+    # Axis of rotation: cross product of old and new orientations directions
+    axis = np.cross(old_orientation, new_orientations)
+    axis_norm = np.linalg.norm(axis, axis=1, keepdims=True)
+    axis = np.divide(axis, axis_norm, out=np.zeros_like(axis), where=axis_norm > tol)
+    # Directions that are parallel/antiparallel to the pointing need any perpendicular axis
+    axis[axis_norm[:, 0] <= tol] = [0, 0, 1]
+    # Angle of rotation: angle between AP's array pointing and direction
+    angle = np.arccos(np.clip(new_orientations @ old_orientation[:, np.newaxis], -1.0, 1.0))
+    # Create rotation matrix
+    return Rotation.from_rotvec(axis * angle)
 
 def boundary_dist_normal(points: np.ndarray, polygon: Polygon, eps: float = 1e-6,
                          exclude_polygon: Polygon | None = None,
