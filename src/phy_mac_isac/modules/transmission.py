@@ -238,9 +238,17 @@ class SisoPhyAbstraction(TransmissionBase):
                  ra_module: ResourceAllocationBase,
                  device: torch.device | str = "cpu",
                  data_mask: torch.Tensor | None = None):
-         #resource_grid, device: torch.device | str = "cpu", *,
-         #bler_target: float = 0.1, direction: str = "uplink",
-         #mcs_table_index: int = 1, data_mask=None):
+        """
+        Initialize the SisoPhyAbstraction class.
+
+
+        :param wireless: params.WirelessParams, Wireless parameters.
+        :param ra_module: ResourceAllocationBase, Resource allocation module containing instances of ResourceGrid and
+            StreamManagement.
+        :param device: torch.device | str [optional], Device for computation. Defaults to "cpu".
+        :param data_mask: torch.Tensor | None [optional], Data mask for resource grid. Defaults to None, meaning all
+            data symbols from the ResourceGrid are taken.
+        """
         super().__init__(wireless, ra_module, device)
 
         # Just to let it less verbose
@@ -262,7 +270,10 @@ class SisoPhyAbstraction(TransmissionBase):
         if tuple(self.data_mask.shape) != shape or not self.data_mask.any():
             raise ValueError(f"data_mask must have shape {shape} and contain data REs")
 
-        # Setup PhyAbstraction and LinkAdaptation modules
+        # Setup Precoder, PhyAbstraction and LinkAdaptation modules
+        self.precoder = phy.ofdm.EyePrecodedChannel(self.ra_module.rg,
+                                                    self.ra_module.sm,
+                                                    device=str(self.device))
         self.posteq_sinr = phy.ofdm.LMMSEPostEqualizationSINR(self.ra_module.rg,
                                                               self.ra_module.sm,
                                                               device=str(self.device))
@@ -276,17 +287,14 @@ class SisoPhyAbstraction(TransmissionBase):
                  channel: np.ndarray | torch.Tensor,
                  tx_power: np.ndarray | float | None = None,
                  no: float | None = None, *,
-                 channel_estimate: torch.Tensor | None = None,
-                 error_variance: float = 0.) -> tuple:
+                 channel_estimate: torch.Tensor | None = None) -> tuple:
         """Accept [S,1,1,1,1,T,F]; tx_power/no are linear powers per RE.
 
         Both powers accept a scalar or an [S] vector. ``no`` is noise power
         over one subcarrier, not noise PSD or total bandwidth noise.
         ``channel_estimate`` has the same shape as channel and is used for
         MCS selection only; channel still controls reception. ``error_variance``
-        is a scalar or [S] absolute complex-coefficient MSE. At nonzero MSE,
-        both SINRs use noise + P_RE*MSE, an abstraction of estimation mismatch
-        rather than a bit-level implementation of an imperfect equalizer.
+        is a scalar or [S] absolute complex-coefficient MSE.
         """
         # Check exact channel
         h = torch.as_tensor(channel, device=self.device)
@@ -314,9 +322,9 @@ class SisoPhyAbstraction(TransmissionBase):
 
     def _core(self, h: torch.Tensor, tx_power: torch.Tensor, no: torch.Tensor, h_hat: torch.Tensor | None = None) -> tuple:
         """All-tensor hot path -- this is the part that gets compiled in CUDA eventually."""
-        power = torch.reshape(torch.broadcast_to(tx_power, (self.ra_module.rg.num_tx,)), (1, -1, 1, 1, 1))
-        h_eff = torch.sqrt(power) * h
-        h_hat_eff = h_eff if h_hat is None else h_hat * torch.sqrt(power)
+        power = torch.reshape(torch.broadcast_to(tx_power, (h.shape[0],)), (-1, 1, 1, 1, 1))
+        h_eff = self.precoder(h, power)
+        h_hat_eff = h_eff if h_hat is None else self.precoder(h_hat, power)
 
         # Compute SINR assuming LMMSE equalization
         sinr = self.posteq_sinr(h_eff, no, h_hat_eff)
@@ -328,50 +336,5 @@ class SisoPhyAbstraction(TransmissionBase):
         mcs_index = self.illa(**kwargs)
         decoded_bits, harq, sinr_eff, tbler, bler = self.phy_abstraction(mcs_index, **kwargs)
 
-        return (sinr, mcs_index.squeeze(-1), decoded_bits.squeeze(-1), harq.squeeze(-1),
+        return (mcs_index.squeeze(-1), decoded_bits.squeeze(-1), harq.squeeze(-1),
                 sinr_eff.squeeze(-1), tbler.squeeze(-1), bler.squeeze(-1))
-
-        slots = h.shape[0]
-        powers = []
-        for name, value, strictly_positive in (("tx_power", tx_power, False), ("no", no, True),
-                                               ("error_variance", error_variance, False)):
-            tensor = torch.as_tensor(value, dtype=h.real.dtype, device=self.device)
-            if tensor.ndim > 1 or (tensor.ndim == 1 and tensor.shape[0] != slots):
-                raise ValueError(f"{name} must be a scalar or a vector of length S")
-            if not torch.isfinite(tensor).all() or (tensor < 0).any() or (
-                    strictly_positive and (tensor == 0).any()):
-                raise ValueError(f"{name} must be finite and {'positive' if strictly_positive else 'nonnegative'}")
-            powers.append(torch.broadcast_to(tensor, (slots,)))
-        power, noise, variance = powers
-        effective_noise = noise + power * variance
-        def make_sinr(cfr):
-            gain = cfr[:, 0, 0, 0, 0].abs().square()
-            raw = gain * (power / effective_noise)[:, None, None]
-            return torch.where(self.data_mask, raw, 0)[..., None, None]
-
-        sinr = make_sinr(h)
-        predicted_sinr = sinr if channel_estimate is None else make_sinr(h_hat)
-        if not torch.isfinite(sinr).all() or not torch.isfinite(predicted_sinr).all():
-            raise ValueError("SINR overflow: check channel and power scaling")
-        if slots == 0:
-            integer = torch.empty(0, dtype=torch.int32, device=self.device)
-            real = torch.empty(0, dtype=h.real.dtype, device=self.device)
-            return SisoTransmissionResult(sinr, integer, integer.clone(), integer.clone(),
-                                          real, real.clone(), real.clone())
-        kwargs = dict(sinr=sinr, mcs_table_index=self.mcs_table_index,
-                      mcs_category=self.mcs_category)
-        mcs_index = self.illa(sinr=predicted_sinr, mcs_table_index=self.mcs_table_index,
-                              mcs_category=self.mcs_category)
-        decoded_bits, harq, sinr_eff, tbler, bler = self.phy_abstraction(mcs_index, **kwargs)
-
-        # SYS interprets all-zero SINR as an unscheduled user. Here the batch
-        # contains only occupied slots: a zero-power/deep-outage slot is a NACK.
-        outage = ~torch.any(sinr > 0, dim=(1, 2, 3, 4))
-        outage = outage[:, None]
-        decoded_bits = torch.where(outage, 0, decoded_bits)
-        harq = torch.where(outage, 0, harq)
-        sinr_eff = torch.where(outage, 0, sinr_eff)
-        tbler = torch.where(outage, 1, tbler)
-        bler = torch.where(outage, 1, bler)
-        return (sinr, mcs_index.squeeze(-1), decoded_bits.squeeze(-1), harq.squeeze(-1),
-            sinr_eff.squeeze(-1), tbler.squeeze(-1), bler.squeeze(-1))
