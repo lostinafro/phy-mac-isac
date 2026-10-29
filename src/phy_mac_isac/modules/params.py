@@ -403,7 +403,6 @@ class GeometryParams:
     ue_vel_cov: np.ndarray | None = None
 
     # Computed attributes (excluded from __init__)
-
     regions_idx: rtree.index.Index = field(init=False)
     ue_location: np.ndarray = field(init=False)
     ue_velocity: np.ndarray = field(init=False)
@@ -578,6 +577,7 @@ class GeometryParams:
     def center(self) -> np.ndarray:
         """Compute the center of the environment."""
         # TODO: see if there is a better way to compute the center accounting for the z-axis
+        #  From area coordinates maybe?
         return np.hstack([np.array(self.environment_shape.centroid.coords[0]).round(3), 0])
 
 
@@ -601,13 +601,13 @@ class EstimationParams:
     geo: GeometryParams
 
     # Computed attributes (excluded from __init__)
-    ue_pos_hat_prio: np.ndarray | None = field(default=None, init=False)
-    ue_pos_hat_post: np.ndarray | None = field(default=None, init=False)
-    ue_pos_cov_prio: np.ndarray | None = field(default=None, init=False)
-    ue_pos_hat_meas: np.ndarray | None = field(default=None, init=False)
-    ue_pos_cov_meas: np.ndarray | None = field(default=None, init=False)
-    ue_pos_cov_post: np.ndarray | None = field(default=None, init=False)
-    ue_region_hat: np.ndarray | None = field(default=None, init=False)
+    ue_pos_hat_prio: np.ndarray = field(init=False)
+    ue_pos_hat_post: np.ndarray = field(init=False)
+    ue_pos_cov_prio: np.ndarray = field(init=False)
+    ue_pos_hat_meas: np.ndarray = field(init=False)
+    ue_pos_cov_meas: np.ndarray = field(init=False)
+    ue_pos_cov_post: np.ndarray = field(init=False)
+    ue_region_hat: np.ndarray = field(init=False)
 
     def __post_init__(self):
         self.ue_pos_hat_prio = np.zeros((self.c.num_frames + 1, self.c.num_ue, 3))
@@ -715,12 +715,10 @@ class Metrics:
     :ivar ue_slot_map: Assignment of user equipment to slots.
     :ivar large_scale: Actual large-scale channel gain for each access point and user.
     :ivar large_scale_hat: Estimated large-scale channel gain for each access point and user.
-    :ivar gen_bit: Number of new data bits generated for each user.
     :ivar queue: Number of data bits waiting in each user's queue.
-    :ivar delta_queue: Remaining capacity in each user's queue.
     :ivar sinr: Signal-to-interference-plus-noise ratio achieved by each user.
-    :ivar se_set: Spectral efficiency selected for each scheduled user.
-    :ivar se_achievable: Spectral efficiency achieved under the simulated channel.
+    :ivar se_set: Spectral efficiency selected by each scheduled user.
+    :ivar se_achievable: Spectral efficiency achieved under the simulated channel through Sionna.
     :ivar se_oracle: Spectral efficiency calculated with perfect channel knowledge.
     :ivar ber: Bit error rate measured for transmitted data.
     :ivar latency: Time taken to deliver data.
@@ -733,43 +731,33 @@ class Metrics:
     :ivar doppler_resolution: Ability to distinguish targets separated in Doppler frequency.
     :ivar efim_oracle: Equivalent Fisher information matrix calculated with perfect knowledge.
     :ivar efim_predicted: Equivalent Fisher information matrix predicted from available estimates.
-    :ivar misclassification: Indicator of an incorrect semantic-region classification.
-    :ivar risk_predicted: Predicted semantic risk for the selected allocation decision.
-    :ivar risk_predicted_full: Predicted semantic risk for each available allocation decision.
-    :ivar risk_hat: Semantic risk evaluated using the simulated ground truth.
      """
     c: SharedParams
 
     # Computed attributes (excluded from __init__)
     # Allocation
-    ue_slot_map: np.ndarray = field(default=None, init=False)
+    ue_slot_map: np.ndarray = field(init=False)
     # Estimation
-    large_scale: np.ndarray = field(default=None, init=False)
-    large_scale_hat: np.ndarray = field(default=None, init=False)
+    large_scale: np.ndarray = field(init=False)
+    large_scale_hat: np.ndarray = field(init=False)
     # Communication parameters
-    queue: np.ndarray = field(default=None, init=False)
-    delta_queue: np.ndarray = field(default=None, init=False)
-    sinr: np.ndarray = field(default=None, init=False)
-    se_set: np.ndarray = field(default=None, init=False)
-    se_achievable: np.ndarray = field(default=None, init=False)
-    se_oracle: np.ndarray = field(default=None, init=False)
-    ber: np.ndarray = field(default=None, init=False)
-    latency: np.ndarray = field(default=None, init=False)
-    packet_loss_rate: np.ndarray  = field(default=None, init=False)
+    queue: np.ndarray = field(init=False)
+    sinr: np.ndarray = field(init=False)
+    se_set: np.ndarray = field(init=False)
+    se_achievable: np.ndarray = field(init=False)
+    se_oracle: np.ndarray = field(init=False)
+    ber: np.ndarray = field(init=False)
+    latency: np.ndarray = field(init=False)
+    packet_loss_rate: np.ndarray  = field(init=False)
     # Localization parameters
-    mse_position: np.ndarray = field(default=None, init=False)
-    mse_velocity: np.ndarray = field(default=None, init=False)
-    detection_probability: np.ndarray = field(default=None, init=False)
-    false_alarm_rate: np.ndarray = field(default=None, init=False)
-    range_resolution: np.ndarray = field(default=None, init=False)
-    doppler_resolution: np.ndarray = field(default=None, init=False)
-    efim_oracle: np.ndarray = field(default=None, init=False)
-    efim_predicted: np.ndarray = field(default=None, init=False)
-    # Semantic parameters
-    misclassification: np.ndarray = field(default=None, init=False)
-    risk_predicted: np.ndarray = field(default=None, init=False)
-    risk_predicted_full: np.ndarray = field(default=None, init=False)
-    risk_hat: np.ndarray = field(default=None, init=False)
+    mse_position: np.ndarray = field(init=False)
+    mse_velocity: np.ndarray = field(init=False)
+    detection_probability: np.ndarray = field(init=False)
+    false_alarm_rate: np.ndarray = field(init=False)
+    range_resolution: np.ndarray = field(init=False)
+    doppler_resolution: np.ndarray = field(init=False)
+    efim_oracle: np.ndarray = field(init=False)
+    efim_predicted: np.ndarray = field(init=False)
 
     def __post_init__(self):
         pass
@@ -787,17 +775,24 @@ class Metrics:
                 raise AttributeError(f"Metrics has no attribute {key!r}")
 
             attr = getattr(self, key)
-            if attr is None:
-                raise ValueError(f"Metric {key!r} has not been initialized "
-                                 f"by {type(self).__name__}.__post_init__")
-
-            if key in {"se_achievable", "se_set", "se_oracle", "sinr"}:
+            if np.any(np.isnan(attr[frame])):
+                # If it is nan, update only the selected indices
                 attr[frame, idx] = value
-            elif isinstance(attr, np.ndarray):
-                attr[frame] = value
             else:
-                setattr(self, key, value)
-
+                # If no nan element, update the whole frame
+                attr[frame] = value
+            # if attr is None:
+            #     raise ValueError(f"Metric {key!r} has not been initialized "
+            #                      f"by {type(self).__name__}.__post_init__")
+            #
+            # if key in {"se_achievable", "se_set", "se_oracle", "sinr"}:
+            #     attr[frame, idx] = value
+            # elif isinstance(attr, np.ndarray):
+            #     attr[frame] = value
+            # else:
+            #     setattr(self, key, value)
+            # TODO: it should also work if I do: try attr[frame, idx] = value except ValueError: attr[frame] = value
+            #  to be rechecked. Or if np.any(np.isnan(attr[frame])) attr[frame, idx] = value else attr[frame] = value
 
 ##### Useful methods for saving/loading #####
 # Check parameter file
@@ -855,7 +850,10 @@ def save_params_npz(filepath: str, **dataclass_instances) -> str:
 
     for group_name, obj in dataclass_instances.items():
         for f in fields(obj):
-            value = getattr(obj, f.name)
+            try:
+                value = getattr(obj, f.name)
+            except AttributeError:  # The attribute does was not initialized
+                continue
             key = f"{f.name}"
 
             if id(value) in instance_ids:
