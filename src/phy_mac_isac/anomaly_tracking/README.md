@@ -30,11 +30,11 @@ print(result.transmission.harq_feedback)  # One TB ACK/NACK per occupied slot
 
 Input configuration uses `SharedParams` and `WirelessParams` from this
 subproject, which override the shared classes in `modules/params.py`.
-`GeometryParams` remains the common geometry class. `StepResult` is an output
+`GeometryParams` remains the common geometry class. `Metrics` is an output
 container in `anomaly_tracking/parameters.py`; no separate scenario-input
 configuration dataclass is used. Its import from `scenario` also remains valid.
 The package exports `AnomalyTrackingScenario`, `SharedParams`, `WirelessParams`,
-`StepResult`, and the allocation-driven `generate_ep_environment` helper.
+`Metrics`, and the allocation-driven `generate_environment` helper.
 
 ## Geometry and channel
 
@@ -89,7 +89,7 @@ variance the estimate equals the channel exactly and no estimation-error
 random samples are drawn. To change it later:
 
 ```python
-scenario.wireless.channel_estimation_error_variance = 1e-10  # Example absolute MSE
+scenario.wireless.ce_error_variance = 1e-10  # Example absolute MSE
 ```
 
 Choose the variance relative to the attenuated channel power in your scenario.
@@ -139,17 +139,17 @@ remain with the caller; there is no automatic HARQ loop.
 For a precomputed allocation sequence:
 
 ```python
-from phy_mac_isac.anomaly_tracking import generate_ep_environment
+from phy_mac_isac.anomaly_tracking import generate_environment
 
-results = generate_ep_environment(
-  1, [[0, -1, 1], [2, 0]],
-  env_kwargs={"num_ue": 3, "num_frames": 2, "num_slots": 3},
-  device="cpu",
+results = generate_environment(
+    1, [[0, -1, 1], [2, 0]],
+    env_kwargs={"num_ue": 3, "num_frames": 2, "num_slots": 3},
+    device="cpu",
 )
 ```
 
 This helper replaces the copied semantic-ISAC runner: it returns a list of
-`StepResult` values and does not create unrelated semantic risk metrics or save
+`Metrics` values and does not create unrelated semantic risk metrics or save
 files automatically. Manage the scenario directly when you need to retain and
 save its `c`, `wireless`, and `geo` dataclasses together with PHY results.
 
