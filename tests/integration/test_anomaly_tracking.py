@@ -8,7 +8,7 @@ import torch
 from sionna.phy import config as sionna_config
 
 from phy_mac_isac.anomaly_tracking import (
-    AnomalyTrackingScenario, SharedParams, WirelessParams, StepResult, generate_ep_environment,
+    AnomalyTrackingScenario, SharedParams, WirelessParams, Metrics, generate_environment,
 )
 from phy_mac_isac.modules.environment import SimulationEnvironment
 from phy_mac_isac.modules.params import GeometryParams
@@ -44,7 +44,7 @@ class AnomalyTrackingTests(unittest.TestCase):
         initial = env.geo.ue_location[-1].copy()
         for frame in range(3):
             result = env.step([2, -1, 0])
-            self.assertIsInstance(result, StepResult)
+            self.assertIsInstance(result, Metrics)
             self.assertEqual(result.frame, frame)
             np.testing.assert_array_equal(env.geo.ue_location[frame], initial)
             torch.testing.assert_close(result.channel, result.channel_estimate, rtol=0, atol=0)
@@ -113,7 +113,7 @@ class AnomalyTrackingTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 SharedParams(**shared)
         with self.assertRaises(ValueError):
-            WirelessParams(SharedParams(), channel_estimation_error_variance=-1)
+            WirelessParams(SharedParams(), ce_error_variance=-1)
         with self.assertRaises(RuntimeError):
             AnomalyTrackingScenario(0, {}, {}, load_env=False).step([0])
 
@@ -124,7 +124,7 @@ class AnomalyTrackingTests(unittest.TestCase):
         estimate = env._estimate_channel(h)
         self.assertTrue(torch.equal(h, estimate))
         self.assertEqual(env.rng.bit_generator.state, state)
-        env.wireless.channel_estimation_error_variance = 1e-8
+        env.wireless.ce_error_variance = 1e-8
         error = env._estimate_channel(h) - h
         self.assertAlmostEqual(error.abs().square().mean().item() / 1e-8, 1., delta=.02)
         self.assertAlmostEqual(error.real.var().item() / 5e-9, 1., delta=.02)
@@ -170,7 +170,7 @@ class AnomalyTrackingTests(unittest.TestCase):
         self.assertTrue(torch.isfinite(result.transmission.tbler).all())
 
     def test_allocation_driven_runner(self):
-        results = generate_ep_environment(2, [[0, -1], [1]], env_kwargs={"num_ue": 2, "num_frames": 2})
+        results = generate_environment(2, [[0, -1], [1]], env_kwargs={"num_ue": 2, "num_frames": 2})
         self.assertEqual([r.frame for r in results], [0, 1])
 
     def test_singular_mobility_covariances_and_legacy_cholesky(self):
