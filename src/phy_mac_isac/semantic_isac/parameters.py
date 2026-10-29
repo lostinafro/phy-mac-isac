@@ -1,4 +1,3 @@
-import os
 from copy import deepcopy
 from pathlib import Path
 import numpy as np
@@ -101,15 +100,17 @@ class WirelessParams(BaseWireless):
 @dataclass
 class Metrics(BaseMetrics):
     """Collect relevant metrics for semantic isac simulations.
-     All metric variables are saved, from frame = 0 to frame = self.c.num_frames - 1.
-     If frame = self.c.num_frames (indexed also with [-1]), the element is the initialization variable.
+    All metric variables are saved, from frame = 0 to frame = self.c.num_frames - 1.
+    If frame = self.c.num_frames (indexed also with [-1]), the element is the initialization variable.
+
+    :ivar delta_queue: Remaining capacity in each user's queue (obtained as `max_queue - queue`)
+    :ivar misclassification: Indicator of an incorrect semantic-region classification.
+    :ivar risk_predicted: Predicted semantic risk for the selected allocation decision.
+    :ivar risk_predicted_full: Predicted semantic risk for each available allocation decision.
+    :ivar risk_hat: Semantic risk evaluated using the simulated ground truth.
     """
     # Communication parameters
     delta_queue: np.ndarray = field(init=False)
-    se_oracle: np.ndarray = field(init=False)
-    # Localization parameters
-
-
     # Semantic parameters
     misclassification: np.ndarray = field(init=False)
     risk_predicted: np.ndarray = field(init=False)
