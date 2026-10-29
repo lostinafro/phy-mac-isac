@@ -1,6 +1,6 @@
 # Re-export shared utilities from the phy_mac_isac.utils package.
 from .common import filter_call_kwargs, filter_kwargs, keyword_parameters, validate_kwargs
-from .geometry import (boundary_dist_normal, distance_to_boundary,
+from .geometry import (rodriguez_rotation, boundary_dist_normal, distance_to_boundary,
                       cart2cyl, cyl2cart, cart2spher, spher2cart,
                       uniform_2d_grid, _bounded_voronoi_cells, lloyd_relaxation,
                       split_polygon_voronoi, which_region, get_gaussian_from_polygon,
