@@ -1,8 +1,8 @@
 import os
+import warnings
 import numpy as np
 import torch
 import mitsuba as mi
-from scipy.spatial.transform import Rotation
 from matplotlib import pyplot as plt
 import shapely as sha
 import sionna.rt as rt
@@ -160,12 +160,12 @@ class SimulationEnvironment:
             self.path_solver = rt.PathSolver()      # Solver module for path evaluation in the ray tracer
 
         # Resource allocation, transmission and tracker modules
-        self.ra_module: type[ResourceAllocationBase] | None = None    # Resource allocation module, giving the allocation on a frame
-        self.transmission_module: type[TransmissionBase] | None = None   # Transmission module, simulating wireless signal processing
-        self.tracker_module: type[TrackerBase] | None = None             # Tracker module, needed for location tracking
+        self.ra_module: ResourceAllocationBase | None = None    # Resource allocation module, giving the allocation on a frame
+        self.transmission_module: TransmissionBase | None = None   # Transmission module, simulating wireless signal processing
+        self.tracker_module: TrackerBase | None = None             # Tracker module, needed for location tracking
 
         # Theoretical evaluation modules
-        self.performance: type[PerformanceBase] | None = None   # Module for theoretic performance evaluation
+        self.performance: PerformanceBase | None = None   # Module for theoretic performance evaluation
 
         # Set up the environment at frame -1 (last element for the dataclasses attributes)
         self.frame = -1             # Denote the current number of the frame
@@ -176,10 +176,10 @@ class SimulationEnvironment:
         self._modules_ready = False
 
     def setup_modules(self,
-                      ra_module: type[ResourceAllocationBase] | None,
-                      transmission_module: type[TransmissionBase] | None,
-                      tracker_module: type[TrackerBase] | None,
-                      performance: type[PerformanceBase] | None):
+                      ra_module: ResourceAllocationBase | None,
+                      transmission_module: TransmissionBase | None,
+                      tracker_module: TrackerBase | None,
+                      performance: PerformanceBase | None):
         """Set scheduling, transmission, tracking, and evaluation modules to be used."""
         if not self._scenario_ready:
             raise RuntimeError("Call setup_scenario() before setup_modules()")
@@ -487,12 +487,14 @@ class SimulationEnvironment:
 
     def place_aps(self,
                   antenna_spacing : float,
-                  ap_location : float | np.ndarray | None = None) -> tuple:
+                  ap_location : float | np.ndarray | None = None,
+                  orientation_policy: str = "center") -> tuple:
         """Generate APs positions.
         Returning the position of the APs and their antennas assuming symmetric antenna positioning
 
         :param antenna_spacing: float, it represents the inter-element distance in a symmetric placement
         :param ap_location: float: z-axis position of the APs; or ndarray: absolute position of the center of the array (AP)
+        :param orientation_policy: str, it represents the orientation policy of the APs. It can be "center", "fixed", "azimuth", or "random".
 
         :returns: tuple, containing the AP positions (np.ndarray), AP rotation class, antenna positions (np.ndarray), and sionna.rt PlanarArray
         """
@@ -520,30 +522,37 @@ class SimulationEnvironment:
 
         # Create the base array through Sionna built-in method
         ap_array = self._default_mimo_array(antenna_spacing)
-        ap_array_pointing = np.array([1, 0, 0])     # Default panel pointing in Sionna is +X axis
+        # Consider that the default PanelArray in Sionna points towards the +X axis
+        ap_array_pointing = np.array([1, 0, 0])
+        # Take local antenna positions for a single AP
+        local_positions = np.array(ap_array.positions(self.wireless.wavelength)).T
 
         ## Point the array to the center of the environment through Rodriguez formula
         # Direction vector from the array to the center
-        direction = self.geo.center - ap_cen_pos
+        if orientation_policy == "center":
+            direction = self.geo.center - ap_cen_pos
+            # TODO: fixed should consider as an input of setup_scenario and fallback to the ap_array pointing only if ap_orientation is None
+        elif orientation_policy == "fixed":
+            direction = ap_array_pointing
+        elif orientation_policy == "azimuth":
+            # TODO: to be check for tensor consistency
+            direction = np.stack((self.geo.center - ap_cen_pos)[..., :2], np.zeros(self.L))
+        elif orientation_policy == "random":
+            direction = np.random.rand(3)
+        else:
+            raise ValueError("Invalid orientation policy")
+
+        # Check the direction to be non-null
         distance = np.linalg.norm(direction, axis=1)
         if np.any(distance == 0):
             raise ValueError("AP position coincides with its pointing target")
+        direction /= distance[:, np.newaxis]
 
-        # Axis of rotation: cross product of AP's array pointing and direction
-        axis = np.cross(ap_array_pointing, direction)
-        axis_norm = np.linalg.norm(axis, axis=1, keepdims=True)
-        axis = np.divide(axis, axis_norm, out=np.zeros_like(axis), where=axis_norm > 1e-12)
-        # Directions that are parallel/antiparallel to the pointing need any perpendicular axis
-        axis[axis_norm[:, 0] <= 1e-12] = [0, 0, 1]
-        # Angle of rotation: angle between AP's array pointing and direction
-        angle = np.arccos(np.clip(direction @ ap_array_pointing[:, np.newaxis], -1.0, 1.0))
-        # Create rotation matrix
-        ap_rotation = Rotation.from_rotvec(axis * angle)
+        # Get rotation object
+        ap_rotation = ut.rodriguez_rotation(ap_array_pointing, direction)
 
-        ant_relative_positions = np.empty((self.L, self.M, 3))
-        # For each array, rotate it to face the center using sionna built-in methods with euler angles from rotation class
-        for l in range(self.L):
-            ant_relative_positions[l, :, :] = np.array(ap_array.rotate(self.wireless.wavelength, mi.Point3f(ap_rotation.as_euler('zyx')[l]))).T
+        # For each array, rotate it to face the center using scipy rotation
+        ant_relative_positions = np.stack([rot.apply(local_positions) for rot in ap_rotation])
 
         # Write antenna position coordinates in absolute coordinate system
         ap_ant_pos = ant_relative_positions + ap_cen_pos[:, np.newaxis, :]
@@ -688,11 +697,15 @@ class SimulationEnvironment:
 
         :returns: np.ndarray, shape (L, U), path gain (linear scale) between UE u and AP l.
         """
+        # Check if radio map is set up
+        if self.rm is None:
+            raise ValueError("Radio map not set up. Call `_setup_scene` first.")
+
+        # Start the computation
         positions = np.asarray(positions)
 
-        # Flatten the radio map's spatial grid; cell_centers and path_gain share the same
-        # spatial ordering (they describe the same grid), so a shared flat index into both
-        # is consistent regardless of the underlying grid layout convention.
+        # Flatten the radio map's spatial grid; cell_centers and path_gain share the same spatial ordering,
+        # so a shared flat index is consistent regardless of the underlying grid layout convention.
         centers = np.array(self.rm.cell_centers).reshape(-1, 3)  # (num_cells, 3)
         gain = np.array(self.rm.path_gain).reshape(self.L, -1)  # (L, num_cells)
 
@@ -705,6 +718,7 @@ class SimulationEnvironment:
         """Estimate the large-scale path gain (linear scale) between each given point and
         every AP, using the AP-side radio map computed in `_setup_scene` (`self.rm`).
 
+        :param rm: rt.RadioMap, a radio map, e.g., the one computed in `_setup_scene` (`self.rm`).
         :param positions: np.ndarray, shape (U, 3), query (x, y, z) positions. Only (x, y)
             is used -- the radio map is evaluated on a fixed horizontal measurement plane
             (see the `center`/`orientation` passed to `rm_solver`), so z is ignored.
@@ -713,11 +727,10 @@ class SimulationEnvironment:
         """
         positions = np.asarray(positions)
 
-        # Flatten the radio map's spatial grid; cell_centers and path_gain share the same
-        # spatial ordering (they describe the same grid), so a shared flat index into both
-        # is consistent regardless of the underlying grid layout convention.
+        # Flatten the radio map's spatial grid; cell_centers and path_gain share the same spatial ordering,
+        # so a shared flat index is consistent regardless of the underlying grid layout convention.
         centers = np.array(rm.cell_centers).reshape(-1, 3)  # (num_cells, 3)
-        gain = np.array(rm.path_gain).reshape(self.U, -1)  # (L, num_cells)
+        gain = np.array(rm.path_gain).reshape(self.U, -1)  # (U, num_cells)
 
         diff = centers[np.newaxis, :, :2] - positions[:, np.newaxis, :2]  # (U, num_cells, 2)
         nearest_cell = np.argmin(np.sum(diff ** 2, axis=-1), axis=1)  # (U,)
@@ -741,9 +754,11 @@ class SimulationEnvironment:
             self.scene.add(rt.Transmitter(name=f"ue_{u}", position=self.geo.ue_location[self.frame, u],
                                           power_dbm=self.wireless.ue_power_dbm[u]))
 
-        # Add APs as receivers, oriented per ap_orientation (z-boresight convention, see place_aps)
+        # Add APs as receivers, oriented per ap_orientation (see place_aps)
         for l in range(self.L):
-            orientation = self.geo.ap_orientation[l].as_euler('ZYX')
+            with warnings.catch_warnings():
+                warnings.filterwarnings("ignore", message=r"Gimbal lock detected.*", category=UserWarning)
+                orientation = self.geo.ap_orientation[l].as_euler('ZYX')
             self.scene.add(rt.Receiver(name=f"ap_{l}",
                                        position=self.geo.ap_location[l],
                                        orientation=orientation))
@@ -782,9 +797,12 @@ class SimulationEnvironment:
                 scene_for_rm = self._build_base_scene(self._scene_name, area_coordinates=self._base_area_coordinates)[0]
                 scene_for_rm.tx_array = self.scene.rx_array
                 for l in range(self.L):
+                    with warnings.catch_warnings():
+                        warnings.filterwarnings("ignore", message=r"Gimbal lock detected.*", category=UserWarning)
+                        orientation = self.geo.ap_orientation[l].as_euler('ZYX')
                     scene_for_rm.add(rt.Transmitter(name=f"ap_{l}",
                                                     position=self.geo.ap_location[l],
-                                                    orientation=self.geo.ap_orientation[l].as_euler('zyx')))
+                                                    orientation=orientation))
 
                 # Set targets/cars
                 if self.c.num_car:
@@ -813,8 +831,11 @@ class SimulationEnvironment:
                                          **ut.filter_kwargs(self.rm_solver, **self.c.rays))
                 params.save_radiomap(rm_filename, self.rm, self.geo.ap_location)
 
-    def _build_base_scene(self, scene_name: str | None,
-                          area_coordinates: list | np.ndarray | None = None) -> tuple[rt.Scene | None, list | np.ndarray, str | None]:
+    def _build_base_scene(self,
+                          scene_name: str | None,
+                          area_coordinates: list | np.ndarray | None = None,
+                          default_room_side: float = params.ROOM_SIDE,
+                          ) -> tuple[rt.Scene | None, list | np.ndarray, str | None]:
         """Build the base propagation scene (loaded from file, or a bare floor), with
         frequency/bandwidth set -- independent of any Tx/Rx additions. Called twice: once
         for `self.scene`, once (fresh) for the AP-side radio map scene in `_setup_scene`.
@@ -836,7 +857,7 @@ class SimulationEnvironment:
         else:
             if area_coordinates is None:
                 # Default is a square room
-                first_quadrant = params.ROOM_SIDE / 2 * np.array([1, 1, 0])
+                first_quadrant = default_room_side / 2 * np.array([1, 1, 0])
                 # Order is left-top first, then clockwise.
                 area_coordinates = np.array([[-1, 1, 0], [1, 1, 0], [1, -1, 0], [-1, -1, 0]]) * first_quadrant
 
