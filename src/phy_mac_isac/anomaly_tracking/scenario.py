@@ -348,7 +348,9 @@ if __name__ == "__main__":
     env_kwargs = {"num_ue": num_ue, "num_slots": num_slots, "num_frames": 10,
                   "num_clusters": num_clusters, "cluster_size": cluster_size}
     env = generate_environment(1, env_kwargs=env_kwargs, device="cuda")
-    for _ in range(env.c.num_frames):
+    for k in range(env.c.num_frames):
         allocation = env.rng.integers(-1, num_ue, size=num_slots)
         results.append(env.step(allocation))
-        print(results[-1])
+
+    # TODO: check the CDF of the sinr and bler before working on the anomaly project
+    #env.metrics.sinr_eff[k]
