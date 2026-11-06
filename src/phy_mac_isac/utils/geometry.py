@@ -207,54 +207,102 @@ def cart2spher(pos: np.ndarray):
 def spher2cart(pos: np.ndarray):
     """ Transformation from cylinder to cartesian coordinates.
 
-    :param pos: np.array (n,3), position to be transformed
-    :return: np.array (n,3), polar coordinate
+    :param pos: np.array (..., 3), position to be transformed
+    :return: np.array (..., 3), cartesian coordinate
     """
-    x = pos[:, 0] * np.sin(pos[:, 1]) * np.cos(pos[:, 2])
-    y = pos[:, 0] * np.sin(pos[:, 1]) * np.sin(pos[:, 2])
-    z = pos[:, 0] * np.cos(pos[:, 1])
+    x = pos[..., 0] * np.sin(pos[..., 1]) * np.cos(pos[..., 2])
+    y = pos[..., 0] * np.sin(pos[..., 1]) * np.sin(pos[..., 2])
+    z = pos[..., 0] * np.cos(pos[..., 1])
     return np.vstack((x, y, z)).T
 
 
 ## Polygon helping functions
-def uniform_2d_grid(shape: Polygon, n: int, margin: float = 1.) -> tuple:
-    """Generate a 2D grid of uniformly spaced points in a rectangular shape.
+def random_2d_positioning(polygon: sha.Polygon,
+                          n: int,
+                          min_dist: np.ndarray,
+                          margin: float = 0.95,
+                          exclusion_centers: np.ndarray | None = None,
+                          exclusion_radius: float | np.ndarray = 0.0,
+                          rng: np.random.Generator = np.random.default_rng()) -> tuple[np.ndarray, list[Polygon]]:
+    """Generate random positions for points in a 2D plane with minimum distance >= min_dist.
+    Modified version of https://stackoverflow.com/questions/27499139/how-can-i-set-a-minimum-distance-constraint-for-generating-points-with-numpy-ran
+    Lloyd relaxation generates a Voronoi diagram creating a quasi uniform grid for the points. Then, random
+    perturbations are applied to the generated random positions.
 
-    :param shape: Polygon, giving the boundaries where the grid must be done
-    :param n: int, number of points in the grid
-    :param margin: float, safety margin to reduce the shape. Default is 1. (no margin)
+    :param polygon: sha.Polygon, polygon to generate random positions within
+    :param n: int, number of points to generate
+    :param min_dist: np.ndarray, minimum distance between UEs in x and y direction
+    :param margin: float, margin from the environment to avoid UE on the boundaries of the environment.
+    :param exclusion_centers: np.ndarray, centers of circular areas to exclude
+    :param exclusion_radius: float, radius of the circular areas to exclude
+    :param rng: np.random.Generator, random number generator
+
+    :returns np.array: positions of UEs
     """
+    # Input check
+    if not np.isfinite(exclusion_radius).all() or np.any(exclusion_radius < 0):
+        raise ValueError("exclusion_radius must be finite and nonnegative")
 
-    if n == 1:
-       return np.array(shape.centroid.coords), np.zeros(2)
+    # Shrunk the whole area to avoid users too close to the border
+    shrunk = polygon.buffer(-(1 - margin) * np.sqrt(polygon.area))
 
-    min_x, min_y, max_x, max_y = shape.bounds
-    min_x *= margin
-    min_y *= margin
-    max_x *= margin
-    max_y *= margin
-    width_ratio = (max_x - min_x) / (max_y - min_y)
+    # If exclusion_radius is a scalar, make it an array of the same size as positions
+    if exclusion_centers is not None and np.any(exclusion_radius > 0):
+        if np.isscalar(exclusion_radius):
+            exclusion_radius = np.full(exclusion_centers.shape[0], exclusion_radius)
+        else:
+            # Check coherent dimensions
+            if exclusion_radius.shape[0] != exclusion_centers.shape[0]:
+                raise ValueError("If an array, exclusion_radius and exclusion_centers must have the same length")
 
-    num_y = np.int32(np.sqrt(n // width_ratio))
-    num_x = np.int32(n // num_y)
+        idx = exclusion_radius > 0
+        positions = np.asarray(exclusion_centers[idx], dtype=float)
 
-    x = np.linspace(min_x, max_x, num_x)
+        if positions.size:
+            positions = np.atleast_2d(positions)
 
-    if n == 2:
-        y = np.zeros(num_y)
-    else:
-        # create regularly spaced neurons
-        y = np.linspace(min_y, max_y, num_y)
+            if positions.ndim != 2 or positions.shape[1] not in (2, 3):
+                raise ValueError("exclusion_centers must have shape (N, 2) or (N, 3)")
+            if not np.isfinite(positions).all():
+                raise ValueError("exclusion_centers must be finite")
 
-    coords = np.stack(np.meshgrid(x, y), -1).reshape(-1, 2)
+            # Shapely approximates circles with polygons. Inflate slightly to contain the entire exclusion disk.
+            quad_segs = 32      # number of linear segments ub a quarter circle
+            buffer_radius = exclusion_radius / np.cos(np.pi / (4 * quad_segs))
 
-    # Compute spacing among elements
-    try:
-        spacing = np.array([x[1] - x[0], y[1] - y[0]])
-    except IndexError:
-        spacing = np.array([x[0], y[0]])
+            # Create exclusion zones
+            exclusion_zones = sha.union_all([
+                sha.Point(p[:2]).buffer(b, quad_segs=quad_segs)
+                for (p, b) in zip(positions, buffer_radius)
+            ])
 
-    return coords, spacing
+            shrunk = shrunk.difference(exclusion_zones)
+
+    # Ensure there is enough space for UE placement
+    if shrunk.is_empty or shrunk.area <= 0:
+        raise ValueError("The boundary margin and exclusion zones leave no UE placement area")
+
+    # Apply Lloyd relaxation to generate almost uniform regions
+    centers, cells = lloyd_relaxation(shrunk, n, rng=rng)
+
+    # Perturb the point positions
+    coords = np.empty_like(centers)
+    for i, (pt, cell) in enumerate(zip(centers, cells)):
+        minx, miny, maxx, maxy = cell.bounds
+        max_shift = np.array([max((maxx - minx) / 2 - min_dist[0], 0),
+                              max((maxy - miny) / 2 - min_dist[1], 0),
+                              ])
+        # Reject-resample until the perturbed point stays inside its own cell
+        for _ in range(10):
+            noise = rng.uniform(-max_shift, max_shift)
+            cand = pt + noise
+            if cell.contains(sha.geometry.Point(cand)):
+                coords[i] = cand
+                break
+        else:
+            coords[i] = pt  # fall back to unperturbed center
+
+    return coords, cells
 
 
 def _bounded_voronoi_cells(centers: np.ndarray, polygon: Polygon) -> list:
@@ -296,7 +344,7 @@ def lloyd_relaxation(polygon: Polygon, n: int, n_iter: int = 30, tol: float = 1e
     :returns: (centers (n,2), cells (list of n Shapely polygons, one per center))
     """
     if n == 1:
-        return np.array(polygon.centroid.coords), [polygon]
+        return _interior_center(polygon)[None, :], [polygon]
 
     # Seed with rejection sampling (works for any polygon shape, convex or not)
     minx, miny, maxx, maxy = polygon.bounds
@@ -311,17 +359,25 @@ def lloyd_relaxation(polygon: Polygon, n: int, n_iter: int = 30, tol: float = 1e
 
     cells = _bounded_voronoi_cells(centers, polygon)
     for _ in range(n_iter):
-        new_centers = np.array([
-            c.centroid.coords[0] if not c.is_empty else centers[i]
-            for i, c in enumerate(cells)
-        ])
+        new_centers = np.array([_interior_center(c) if not c.is_empty else centers[i] for i, c in enumerate(cells)])
         shift = np.linalg.norm(new_centers - centers, axis=1).max()
         centers = new_centers
         if shift < tol:
             break
         cells = _bounded_voronoi_cells(centers, polygon)
 
-    return centers, cells
+    # Recompute cells for the final centers after convergence.
+    return centers, _bounded_voronoi_cells(centers, polygon)
+
+
+def _interior_center(polygon: Polygon | MultiPolygon) -> np.ndarray:
+    """Return the centroid if inside the polygon, otherwise a cheaply computed interior point."""
+    point = polygon.centroid
+
+    if not polygon.contains(point):
+        point = polygon.representative_point()
+
+    return np.asarray(point.coords[0])
 
 
 def split_polygon_voronoi(polygon: Polygon, n: int, centers: np.ndarray | None = None,
