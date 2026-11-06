@@ -195,7 +195,8 @@ class SimulationEnvironment:
                        antenna_spacing: float | None = None,
                        init_ue_pos: np.ndarray | None = None,
                        ue_vel_mean: np.ndarray | float = 0.,
-                       ue_vel_cov: np.ndarray | float = params.VEL_STD):
+                       ue_vel_cov: np.ndarray | float = params.VEL_STD,
+                       ue_ap_min_distance: float = 0.):
         """Set up the actual environment as it was at frame -1 (initial condition of the system).
 
         This method initializes the physical environment by placing Access Points (APs) and User Equipment (UEs),
@@ -222,6 +223,8 @@ class SimulationEnvironment:
         :param ue_vel_cov: velocity covariance for the UEs. Can be:
             - ``float``: Standard deviation for a diagonal covariance matrix (σ²I) applied to all UEs.
             - ``np.ndarray``: (U, 3, 3) array of covariance matrices, one for each UE.
+
+        :param ue_ap_min_distance: Minimum distance between UEs and APs in meters. Default is 0.
 
         :raises AssertionError: If ``ue_vel_cov`` is an ndarray but does not have shape (U, 3, 3).
         :raises AttributeError: If ``ue_vel_cov`` is not an ndarray (handled internally to create default covariance).
@@ -250,7 +253,11 @@ class SimulationEnvironment:
 
             # Place APs, UEs and compute their distances
             ap_pos, ap_rot, ant_pos = self.place_aps(antenna_spacing, ap_pos)
-            init_ue_pos = self.ue_random_positioning() if init_ue_pos is None else init_ue_pos
+            if init_ue_pos is None:
+                # Project the minimum distance on the floor (z = 0)
+                min_ue_ap_dist_floor = np.sqrt(np.clip(ue_ap_min_distance ** 2 - ap_pos[:, 2] ** 2, 0, None))
+                init_ue_pos = self.ue_random_positioning(exclusion_centers=ap_pos,
+                                                         exclusion_radius=min_ue_ap_dist_floor)
 
             # Set velocity mean and covariance
             if isinstance(ue_vel_mean, (float, int)):
@@ -563,37 +570,35 @@ class SimulationEnvironment:
     def ue_random_positioning(self,
                               height: float | np.ndarray = params.UE_HEIGHT,
                               min_dist: np.ndarray = np.ones(2),
-                              margin: float = 0.95) -> np.ndarray:
+                              margin: float = 0.95,
+                              exclusion_centers: np.ndarray | None = None,
+                              exclusion_radius: float = 0.) -> np.ndarray:
         """Generate UE random positions with minimum distance >= min_dist.
         Modified version of https://stackoverflow.com/questions/27499139/how-can-i-set-a-minimum-distance-constraint-for-generating-points-with-numpy-ran
+        Lloyd relaxation generates a Voronoi diagram creating a quasi uniform grid for the UEs. Then, random
+        perturbations are applied to the generated random positions.
 
         :param height: float or np.ndarray, height of the UEs
         :param min_dist: np.ndarray, minimum distance between UEs in x and y direction
         :param margin: float, margin from the environment to avoid UE on the boundaries of the environment.
+        :param exclusion_centers: np.ndarray, centers of circular areas to exclude
+        :param exclusion_radius: float, radius of the circular areas to exclude
 
         :returns np.array: positions of UEs
         """
+        # Check if height is scalar and convert to array if necessary
         if np.isscalar(height):
             height = height * np.ones((self.U, 1))
 
-        shrunk = self.geo.environment_shape.buffer(-(1 - margin) * np.sqrt(self.geo.environment_shape.area))
-        centers, cells = ut.lloyd_relaxation(shrunk, self.U, rng=self.rng)
-
-        coords = np.empty_like(centers)
-        for i, (pt, cell) in enumerate(zip(centers, cells)):
-            minx, miny, maxx, maxy = cell.bounds
-            max_shift = np.array([max((maxx - minx) / 2 - min_dist[0], 0),
-                                  max((maxy - miny) / 2 - min_dist[1], 0),
-                                  ])
-            # Reject-resample until the perturbed point stays inside its own cell
-            for _ in range(10):
-                noise = self.rng.uniform(-max_shift, max_shift)
-                cand = pt + noise
-                if cell.contains(sha.geometry.Point(cand)):
-                    coords[i] = cand
-                    break
-            else:
-                coords[i] = pt  # fall back to unperturbed center
+        coords, _ = ut.random_2d_positioning(
+            self.geo.environment_shape,
+            n=self.U,
+            min_dist=min_dist,
+            margin=margin,
+            exclusion_centers=exclusion_centers,
+            exclusion_radius=exclusion_radius,
+            rng=self.rng
+        )
 
         # Permute users for index randomization
         return self.rng.permutation(np.hstack((coords, height)))
