@@ -16,6 +16,8 @@ NUM_EP = int(1e2)
 NUM_AP = 1
 NUM_ANT = 1
 NUM_UE = 100
+NUM_CLUSTERS = 20
+CLUSTER_SIZE = 4
 NUM_REGIONS = 1
 UE_HEIGHT = 1             # [m]
 ROOM_SIDE = 150
@@ -74,16 +76,20 @@ class SharedParams(BaseShared):
     num_regions: int = NUM_REGIONS
     rays: dict = field(default_factory=lambda: deepcopy(RT_PARAM))
 
+    # Anomaly tracking parameters
+    num_clusters: int = NUM_CLUSTERS
+    cluster_size: int = CLUSTER_SIZE
+
     def __post_init__(self):
         super().__post_init__()
+
+        # Force SISO communication
         if self.num_ap != 1 or self.num_ant != 1:
             raise ValueError("Anomaly tracking requires a single SISO AP")
-        for name in ("num_ue", "num_slots", "num_frames", "num_sym", "num_scs"):
-            value = getattr(self, name)
-            if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
-                raise ValueError(f"{name} must be a positive integer")
-        if self.num_scs % 12:
-            raise ValueError("num_scs must be a multiple of 12")
+
+        # Force the total number of UEs
+        if self.num_ue < self.num_clusters * self.cluster_size:
+            raise ValueError("The total number of UEs must be greater than or equal to the number of clusters times the cluster size")
 
 
 @dataclass
