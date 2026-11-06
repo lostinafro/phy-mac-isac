@@ -2,7 +2,7 @@
 from .common import filter_call_kwargs, filter_kwargs, keyword_parameters, validate_kwargs
 from .geometry import (rodriguez_rotation, boundary_dist_normal, distance_to_boundary,
                       cart2cyl, cyl2cart, cart2spher, spher2cart,
-                      uniform_2d_grid, _bounded_voronoi_cells, lloyd_relaxation,
+                      random_2d_positioning, lloyd_relaxation,
                       split_polygon_voronoi, which_region, get_gaussian_from_polygon,
                       build_spatial_index, build_floor_mesh, scene_area_coordinates, floor_mesh_cache_key)
 from .plotting import node_color, node_mark, shade_of, printplot
