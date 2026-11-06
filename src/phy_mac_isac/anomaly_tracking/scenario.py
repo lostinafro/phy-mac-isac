@@ -1,6 +1,7 @@
 """Allocation-driven SISO links using the common simulation environment."""
 import numpy as np
 import torch
+from shapely.geometry import MultiPolygon
 from sionna.phy.channel import GenerateOFDMChannel
 from sionna.phy.channel.tr38901 import PanelArray, UMi
 from sionna.phy import config as sionna_config
@@ -44,25 +45,85 @@ class AnomalyTrackingScenario(SimulationEnvironment):
         """Build the base propagation scene with the new default room side."""
         return super()._build_base_scene(scene_name, area_coordinates, default_room_side)
 
-    def ue_random_positioning(self, height=anomaly_params.UE_HEIGHT,
-                              min_dist=np.ones(2), margin=0.95):
-        """Use the shared placement algorithm with the anomaly UE height."""
-        # TODO: Change this to cluster of UEs sampled as Gaussians around a random center
-        return super().ue_random_positioning(height, min_dist, margin)
+    def ue_random_positioning(self,
+                              height: float | np.ndarray = anomaly_params.UE_HEIGHT,
+                              min_dist: np.ndarray = 10 * np.ones(2),
+                              margin: float = 0.99,
+                              exclusion_centers: np.ndarray | None = None,
+                              exclusion_radius: float = 10.):
+        """First generate the cluster center randomly. Then, place the UEs around them randomly.
+        Finally, place the unclustered UEs randomly throughout the whole environment.
+        """
+        # Check if height is scalar and convert to array if necessary
+        if np.isscalar(height):
+            height = height * np.ones((self.U, 1))
+
+        # Sample the center first
+        cluster_centroids, cells = ut.random_2d_positioning(
+            self.geo.environment_shape,
+            n=self.c.num_clusters,
+            min_dist=min_dist,
+            margin=margin,
+            exclusion_centers=exclusion_centers,
+            exclusion_radius=exclusion_radius,
+            rng=self.rng
+        )
+
+        # Now sample the device of each cluster
+        coords = []
+        for (centroid, cell) in zip(cluster_centroids, cells):
+            coords.append(
+                ut.random_2d_positioning(
+                    cell,
+                    n=self.c.cluster_size,
+                    min_dist=np.ones(2),
+                    margin=1.,
+                    exclusion_centers=exclusion_centers,
+                    exclusion_radius=exclusion_radius,
+                    rng=self.rng
+                )[0]
+            )
+
+        clustered_coords = np.vstack(coords)
+
+        # Check how many UE are left
+        unclustered_ues = self.c.num_ue - clustered_coords.shape[0]
+        if unclustered_ues:
+            # Now sample the unclustered device randomly
+            unclustered_coords = ut.random_2d_positioning(
+                self.geo.environment_shape,
+                n=unclustered_ues,
+                min_dist=np.ones(2),
+                margin=margin,
+                exclusion_centers=clustered_coords,
+                exclusion_radius=1,
+                rng=self.rng
+            )[0]
+        else:
+            unclustered_coords = []
+
+        coords = np.vstack([clustered_coords, unclustered_coords])
+
+        # The following can be useful for visualization and to check which user is in which cluster
+        self.geo.update(semantic_regions=MultiPolygon(cells))
+
+        return np.hstack((coords, height))
 
     def setup_scenario(self,
                        ap_pos: float | np.ndarray | None = None,
                        antenna_spacing: float | None = None,
                        init_ue_pos: np.ndarray | None = None,
                        ue_vel_mean: np.ndarray | float= 0.,
-                       ue_vel_cov: np.ndarray | float = 0.):
+                       ue_vel_cov: np.ndarray | float = 0.,
+                       ue_ap_min_distance: float = 10.):
         """Generate or restore base geometry; default AP height is 10 m (UMi)."""
         super().setup_scenario(
             ap_pos=np.array([[0., 0., 10.0]]) if ap_pos is None else ap_pos,
             antenna_spacing=antenna_spacing,
             init_ue_pos=init_ue_pos,
             ue_vel_mean=ue_vel_mean,
-            ue_vel_cov=ue_vel_cov)
+            ue_vel_cov=ue_vel_cov,
+            ue_ap_min_distance=ue_ap_min_distance)
 
     def setup_modules(self,
                       ra_module = None,
@@ -85,8 +146,8 @@ class AnomalyTrackingScenario(SimulationEnvironment):
 
         self.channel_model = UMi(
             carrier_frequency=self.wireless.carrier, o2i_model="low",
-            ut_array=self._3gpp_siso_array(self.geo.antenna_spacing),
-            bs_array=self._3gpp_siso_array(self.geo.antenna_spacing),
+            ut_array=self._omni_antenna(self.geo.antenna_spacing),
+            bs_array=self._omni_antenna(self.geo.antenna_spacing),
             direction=self.wireless.direction,
             enable_pathloss=True,
             enable_shadow_fading=self.wireless.enable_shadow_fading,
@@ -171,7 +232,7 @@ class AnomalyTrackingScenario(SimulationEnvironment):
         slot_indices = np.flatnonzero(allocation >= 0)
         ue_idx = allocation[slot_indices]
 
-        ## Frame starts now (The first value of frame is -1, i.e., the initialization frame.)
+        # Frame starts now (The first value of frame is -1, i.e., the initialization frame.)
         self.frame += 1
         self.move_ue()      # By default, movement is not considered
 
@@ -211,7 +272,7 @@ class AnomalyTrackingScenario(SimulationEnvironment):
 
         return self.metrics.decoded(self.frame), self.metrics.successful_ues(self.frame)
 
-    def _3gpp_siso_array(self, antenna_spacing: float):
+    def _omni_antenna(self, antenna_spacing: float):
         return PanelArray(
             num_rows_per_panel=self.M_v,
             num_cols_per_panel=self.M_h,
@@ -282,7 +343,12 @@ if __name__ == "__main__":
     results = []
     num_ue = 50
     num_slots = 10
-    env = generate_environment(1, env_kwargs={"num_ue": num_ue, "num_slots": num_slots, "num_frames": 10}, device="cuda")
+    num_clusters = 10
+    cluster_size = 4
+    env_kwargs = {"num_ue": num_ue, "num_slots": num_slots, "num_frames": 10,
+                  "num_clusters": num_clusters, "cluster_size": cluster_size}
+    env = generate_environment(1, env_kwargs=env_kwargs, device="cuda")
     for _ in range(env.c.num_frames):
         allocation = env.rng.integers(-1, num_ue, size=num_slots)
         results.append(env.step(allocation))
+        print(results[-1])
