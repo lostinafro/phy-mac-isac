@@ -207,7 +207,7 @@ class AnomalyTrackingScenario(SimulationEnvironment):
         return channel + torch.as_tensor(error, dtype=channel.dtype)
 
     @torch.no_grad()
-    def step(self, allocation: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    def step(self, allocation: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         """Advance geometry, then decode one transport block per occupied slot.
 
         Allocation contains ordered zero-based UE IDs (-1 = idle), up to the
@@ -225,8 +225,8 @@ class AnomalyTrackingScenario(SimulationEnvironment):
         allocation = np.asarray(allocation)
         if allocation.ndim != 1 or not np.issubdtype(allocation.dtype, np.integer):
             raise ValueError("allocation must be a 1D sequence of integer UE IDs")
-        if np.any((allocation < -1) | (allocation >= self.U)):
-            raise ValueError("UE IDs must lie in [0,num_ue); use -1 for idle")
+        if np.any((allocation < -2) | (allocation >= self.U)):
+            raise ValueError("UE IDs must lie in [0,num_ue); use -1 for idle; -2 for collision")
 
         # Start allocation toward channel generation
         slot_indices = np.flatnonzero(allocation >= 0)
@@ -270,7 +270,7 @@ class AnomalyTrackingScenario(SimulationEnvironment):
                             tbler=tbler,
                             bler=bler)
 
-        return self.metrics.decoded(self.frame), self.metrics.successful_ues(self.frame)
+        return self.metrics.decoded(self.frame), self.metrics.successful_ues(self.frame), bler
 
     def _omni_antenna(self, antenna_spacing: float):
         return PanelArray(
@@ -328,8 +328,8 @@ def generate_environment(episode,
     )
     # --- Build environment ---
     sha_kwargs = ut.filter_call_kwargs(AnomalyTrackingScenario.shared_type, **env_kwargs)
-    wir_kwargs = ut.filter_call_kwargs(SimulationEnvironment.wireless_type, **env_kwargs)
-    ini_kwargs = ut.filter_call_kwargs(SimulationEnvironment, **env_kwargs)
+    wir_kwargs = ut.filter_call_kwargs(AnomalyTrackingScenario.wireless_type, **env_kwargs)
+    ini_kwargs = ut.filter_call_kwargs(AnomalyTrackingScenario, **env_kwargs)
     env = AnomalyTrackingScenario(episode, sha_kwargs, wir_kwargs, **ini_kwargs)
     # Setup scenario
     env.setup_scenario(**ut.filter_call_kwargs(env.setup_scenario, **env_kwargs))
