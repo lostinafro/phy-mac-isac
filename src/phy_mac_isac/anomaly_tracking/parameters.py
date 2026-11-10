@@ -157,7 +157,7 @@ class Metrics(BaseMetrics):
     bler: np.ndarray = field(init=False)
 
     def __post_init__(self):
-        self.allocation = -1 * np.ones((self.c.num_frames + 1, self.c.num_slots), dtype=int)
+        self.allocation = np.full((self.c.num_frames + 1, self.c.num_slots), -1, dtype=int)
         self.mcs_index = np.full((self.c.num_frames + 1, self.c.num_ue), np.nan)
         self.decoded_bits = np.full((self.c.num_frames + 1, self.c.num_ue), np.nan)
         self.harq_feedback = np.full((self.c.num_frames + 1, self.c.num_ue), np.nan)
@@ -166,9 +166,13 @@ class Metrics(BaseMetrics):
         self.bler = np.full((self.c.num_frames + 1, self.c.num_ue), np.nan)
 
     def decoded(self, frame: int) -> np.ndarray:
-        """Success flags in original slot order; idle slots are False."""
+        """Success flags in original slot order; idle and collided slots are False."""
         allocation_frame = self.allocation[frame]
-        return self.harq_feedback[frame, allocation_frame] == 1
+        singleton = allocation_frame >= 0
+
+        decoded = np.zeros(allocation_frame.shape, dtype=bool)
+        decoded[singleton] = self.harq_feedback[frame, allocation_frame[singleton]] == 1
+        return decoded
 
     def successful_ues(self, frame: int) -> np.ndarray:
         return self.allocation[frame, self.decoded(frame)]
