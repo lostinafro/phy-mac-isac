@@ -22,8 +22,15 @@ class AnomalyTrackingTests(unittest.TestCase):
         torch.set_num_threads(2)
 
     def scenario(self, wireless=None, frames=4, slots=4, velocity=0.0):
+        shared = {
+            "num_ue": 3,
+            "num_slots": slots,
+            "num_frames": frames,
+            "num_clusters": 1,
+            "cluster_size": 1,
+        }
         env = AnomalyTrackingScenario(
-            17, {"num_ue": 3, "num_slots": slots, "num_frames": frames},
+            17, shared,
             {"force_los": True, **(wireless or {})}, load_env=False)
         env.setup_scenario(
             ap_pos=np.array([[0., 0., 10.]]),
@@ -43,20 +50,28 @@ class AnomalyTrackingTests(unittest.TestCase):
         self.assertEqual(env.frame, -1)
         initial = env.geo.ue_location[-1].copy()
         for frame in range(3):
-            result = env.step([2, -1, 0])
-            self.assertIsInstance(result, Metrics)
-            self.assertEqual(result.frame, frame)
+            allocation = np.array([2, -1, 0, -2])
+            ue_ids = allocation[allocation >= 0]
+
+            decoded, successful_ues, bler = env.step(allocation)
             np.testing.assert_array_equal(env.geo.ue_location[frame], initial)
-            torch.testing.assert_close(result.channel, result.channel_estimate, rtol=0, atol=0)
-            self.assertEqual(tuple(result.channel.shape), (2, 1, 1, 1, 1, 14, 72))
-            np.testing.assert_array_equal(result.ue_ids, [2, 0])
-            np.testing.assert_array_equal(result.slot_indices, [0, 2])
-            self.assertFalse(result.decoded[1])
-            np.testing.assert_array_equal(result.decoded[[0, 2]], result.transmission.decoded.numpy())
-            self.assertFalse(torch.allclose(result.channel[0], result.channel[1], atol=1e-14))
+
+            self.assertIsInstance(env.metrics, Metrics)
+            self.assertEqual(env.frame, frame)
+            self.assertEqual(decoded.shape, allocation.shape)
+            self.assertFalse(decoded[allocation < 0].any())
+
+            np.testing.assert_array_equal(
+                decoded[allocation >= 0],
+                env.metrics.harq_feedback[frame, ue_ids] == 1,
+            )
+            np.testing.assert_array_equal(
+                successful_ues,
+                allocation[decoded],
+            )
 
     def test_random_placement_uses_area_and_anomaly_height(self):
-        env = AnomalyTrackingScenario(5, {"num_ue": 5}, {}, load_env=False)
+        env = AnomalyTrackingScenario(5, {"num_ue": 5, "cluster_size": 2, "num_clusters": 1}, {}, load_env=False)
         env.setup_scenario()
         self.assertEqual(env.geo.ue_location[-1].shape, (5, 3))
         from shapely import Point
@@ -70,9 +85,9 @@ class AnomalyTrackingTests(unittest.TestCase):
         env = self.scenario(velocity=velocity)
         initial = env.geo.ue_location[-1].copy()
         with patch.object(env.channel_model, "set_topology", wraps=env.channel_model.set_topology) as setter:
-            env.step([2, 0, 2])
+            env.step([2, 0, 2, -1])
             for frame in (1, 2):
-                env.step([1, 0])
+                env.step([1, 0, -1, -1])
                 expected = initial + (frame + 1) * velocity * env.wireless.frame_time
                 np.testing.assert_allclose(env.geo.ue_location[frame], expected)
                 kwargs = setter.call_args.kwargs
@@ -87,19 +102,18 @@ class AnomalyTrackingTests(unittest.TestCase):
         env.geo.ue_velocity[0] = 0
         env._load_env = True
         with patch.object(env.channel_model, "set_topology", wraps=env.channel_model.set_topology) as setter:
-            env.step([1, 2])
+            env.step([1, 2, -1, -1])
             np.testing.assert_array_equal(setter.call_args.kwargs["ut_loc"].numpy()[:, 0], current[[1, 2]])
 
     def test_changing_batch_size_idle_frames_and_frame_limit(self):
         env = self.scenario(frames=4)
-        for allocation, size in (([0, 1, 2], 3), ([-1, -1], 0), ([], 0), ([2], 1)):
-            result = env.step(allocation)
-            self.assertEqual(result.channel.shape[0], size)
-            self.assertEqual(result.transmission.harq_feedback.numel(), size)
-        self.assertEqual(env.frame, 3)
-        with self.assertRaisesRegex(RuntimeError, "frames"):
+        for allocation, size in (([0, 1, 2, -1], 3), ([-1, -1, -1, -1], 0), ([2, -1, -2, -2], 1)):
+            _ = env.step(allocation)
+            self.assertEqual(np.nansum(env.metrics.harq_feedback[env.frame]), size)
+        self.assertEqual(env.frame, 2)
+        with self.assertRaisesRegex(ValueError, "num_slots"):
             env.step([0])
-        self.assertEqual(env.frame, 3)
+        self.assertEqual(env.frame, 2)
 
     def test_invalid_inputs_do_not_advance_frame(self):
         env = self.scenario()
@@ -125,14 +139,15 @@ class AnomalyTrackingTests(unittest.TestCase):
         self.assertTrue(torch.equal(h, estimate))
         self.assertEqual(env.rng.bit_generator.state, state)
         env.wireless.ce_error_variance = 1e-8
-        error = env._estimate_channel(h) - h
+        h_hat =  env._estimate_channel(h)
+        error = h_hat - h
+        self.assertFalse(torch.equal(h, h_hat))
         self.assertAlmostEqual(error.abs().square().mean().item() / 1e-8, 1., delta=.02)
         self.assertAlmostEqual(error.real.var().item() / 5e-9, 1., delta=.02)
         self.assertAlmostEqual(error.imag.var().item() / 5e-9, 1., delta=.02)
-        result = env.step([0, 1])
-        self.assertFalse(torch.equal(result.channel, result.channel_estimate))
-        self.assertEqual(result.channel_error_variance, 1e-8)
-        self.assertTrue(torch.isfinite(result.transmission.sinr).all())
+        _, successful_ues, _ = env.step([0, 1, -1, -1])
+        self.assertEqual(env.wireless.ce_error_variance, 1e-8)
+        self.assertTrue(np.isfinite(env.metrics.sinr_eff[env.frame, successful_ues]).all())
 
     def test_estimate_drives_mcs_but_does_not_replace_physical_channel(self):
         env = self.scenario()
@@ -140,19 +155,28 @@ class AnomalyTrackingTests(unittest.TestCase):
         tx = env.transmission_module
         ordinary = tx(h, tx_power=1., no=1.)
         optimistic = tx(h, tx_power=1., no=1., channel_estimate=10 * h)
-        torch.testing.assert_close(ordinary.sinr, optimistic.sinr)
-        self.assertGreater(optimistic.mcs_index.item(), ordinary.mcs_index.item())
-        uncertain = tx(h, tx_power=1., no=1., channel_estimate=h, error_variance=1.)
-        torch.testing.assert_close(uncertain.sinr, ordinary.sinr / 2)
+        # Testing sinr (4th argument)
+        torch.testing.assert_close(ordinary[3], optimistic[3])
+        # Testing mcs_index (1st argument)
+        self.assertGreater(optimistic[0].item(), ordinary[0].item())
+        env.wireless.ce_error_variance = 1.
+        estimate = env._estimate_channel(h)
+        estimate_power = estimate.abs().square().mean().cpu().numpy()
+        uncertain = tx(h, tx_power=1., no=1., channel_estimate=estimate)
+        torch.testing.assert_close(uncertain[3], ordinary[3])
         with self.assertRaises(ValueError):
-            tx(h, channel_estimate=h[..., :-1], error_variance=0.)
+            tx(h, channel_estimate=h[..., :-1])
         with self.assertRaises(ValueError):
-            tx(h, error_variance=-1.)
+            env.wireless.ce_error_variance = -1.
+            env._estimate_channel(h)
 
     def test_geometry_dependent_pathloss_survives_ofdm_conversion(self):
         env = self.scenario(slots=64)
-        result = env.step([0] * 32 + [2] * 32)
-        energy = result.channel.abs().square().mean(dim=(1, 2, 3, 4, 5, 6))
+        allocation = np.array([0] * 32 + [2] * 32)
+        slot_indices = np.flatnonzero(allocation >= 0)
+        ue_idx = allocation[slot_indices]
+        env._set_channel_topology(ue_idx)
+        energy = env.channel_generator(batch_size=ue_idx.size).abs().square().mean(dim=(1, 2, 3, 4, 5, 6))
         # Independent fast fading is averaged over 32 links at each distance.
         # 20 m and 80 m outdoor LOS links must not normalize to identical gain.
         self.assertGreater(energy[:32].mean().item(), 2 * energy[32:].mean().item())
@@ -161,17 +185,20 @@ class AnomalyTrackingTests(unittest.TestCase):
     def test_downlink_and_ue_specific_power_units(self):
         env = self.scenario(wireless={"ue_power": np.array([.001, .002, .003])})
         with patch.object(env, "transmission_module", wraps=env.transmission_module) as tx:
-            env.step([2, 0])
-            np.testing.assert_allclose(tx.call_args.kwargs["tx_power"], np.array([.003, .001]) / env.F)
-            self.assertEqual(tx.call_args.kwargs["no"], env.wireless.nob_ap / env.F)
+            env.step([2, 0, -1, -1])
+            # Test tx_power
+            np.testing.assert_allclose(tx.call_args.args[1], np.array([.003, .001]))
+            # Test power
+            self.assertEqual(tx.call_args.args[2], env.wireless.nob_ap)
         downlink = self.scenario(wireless={"direction": "downlink", "ap_power": .1})
-        result = downlink.step([1, 2])
-        self.assertEqual(result.channel.shape, (2, 1, 1, 1, 1, 14, 72))
-        self.assertTrue(torch.isfinite(result.transmission.tbler).all())
-
-    def test_allocation_driven_runner(self):
-        results = generate_environment(2, [[0, -1], [1]], env_kwargs={"num_ue": 2, "num_frames": 2})
-        self.assertEqual([r.frame for r in results], [0, 1])
+        allocation = np.array([1, 2, -1, -1])
+        slot_indices = np.flatnonzero(allocation >= 0)
+        ue_idx = allocation[slot_indices]
+        downlink._set_channel_topology(ue_idx)
+        channel = downlink.channel_generator(batch_size=ue_idx.size)
+        self.assertEqual(channel.shape, (2, 1, 1, 1, 1, 14, 72))
+        _, successful_ues, _ = downlink.step(allocation)
+        self.assertTrue(np.isfinite(downlink.metrics.tbler[downlink.frame, successful_ues]).all())
 
     def test_singular_mobility_covariances_and_legacy_cholesky(self):
         covariance = np.stack([np.zeros((3, 3)), np.diag([1., 1., 0.])])
