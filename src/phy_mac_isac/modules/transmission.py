@@ -259,13 +259,19 @@ class SisoPhyAbstraction(TransmissionBase):
             raise ValueError("The resource grid must have one transmitter and stream")
         
         # Resource grid shape
-        shape = (self.rg.num_ofdm_symbols, self.rg.fft_size)
+        shape = (self.rg.num_ofdm_symbols, self.rg.num_effective_subcarriers)
 
         # Create mask of data symbols from the resource grid
         # ResourceGrid type 0 identifies data (1 pilots, 2 guard, 3 DC).
         if data_mask is None:
-            data_mask = self.rg.build_type_grid()[0, 0] == 0
-        self.data_mask = torch.as_tensor(data_mask, dtype=torch.bool, device=self.device)
+            data_mask =  torch.as_tensor(self.rg.build_type_grid()[0, 0] == 0, dtype=torch.bool, device=self.device)
+            # The precoder removes nulled subcarriers; match that frequency axis.
+            effective_idx = torch.as_tensor(self.rg.effective_subcarrier_ind, dtype=torch.long, device=self.device)
+            self.data_mask = data_mask.index_select(1, effective_idx)
+        else:
+            self.data_mask = torch.as_tensor(data_mask, dtype=torch.bool, device=self.device)
+
+
         #  Check if data contains REs
         if tuple(self.data_mask.shape) != shape or not self.data_mask.any():
             raise ValueError(f"data_mask must have shape {shape} and contain data REs")
@@ -326,15 +332,23 @@ class SisoPhyAbstraction(TransmissionBase):
         h_eff = self.precoder(h, power)
         h_hat_eff = h_eff if h_hat is None else self.precoder(h_hat, power)
 
-        # Compute SINR assuming LMMSE equalization
-        sinr = self.posteq_sinr(h_eff, no, h_hat_eff)
+        # Compute received SINR assuming LMMSE equalization
+        sinr_rx = self.posteq_sinr(h_eff, no)
+        # Compute link adaptation estimated SINR assuming LMMSE equalization
+        sinr_la = self.posteq_sinr(h_hat_eff, no)
+
+        # Apply data mask to remove SINR of pilots and guard subcarriers
+        data_mask = self.data_mask[None, :, :, None, None]      # (1, T, F, 1, 1)
+        sinr_rx = torch.where(data_mask, sinr_rx, 0.)
+        sinr_la = torch.where(data_mask, sinr_la, 0.)
 
         # Create Link adaptation and simulate transmission
-        kwargs = dict(sinr=sinr,
-                      mcs_table_index=self.wireless.mcs_table_index,
+        kwargs = dict(mcs_table_index=self.wireless.mcs_table_index,
                       mcs_category=self.wireless.mcs_category)
-        mcs_index = self.illa(**kwargs)
-        decoded_bits, harq, sinr_eff, tbler, bler = self.phy_abstraction(mcs_index, **kwargs)
+        # Apply estimated SINR to link adaptation
+        mcs_index = self.illa(sinr=sinr_la, **kwargs)
+        # Apply received SINR to phy_abstraction
+        decoded_bits, harq, sinr_eff, tbler, bler = self.phy_abstraction(mcs_index, sinr=sinr_rx, **kwargs)
 
         return (mcs_index.squeeze(-1), decoded_bits.squeeze(-1), harq.squeeze(-1),
                 sinr_eff.squeeze(-1), tbler.squeeze(-1), bler.squeeze(-1))
