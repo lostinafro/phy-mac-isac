@@ -268,7 +268,7 @@ def random_2d_positioning(polygon: sha.Polygon,
 
             # Shapely approximates circles with polygons. Inflate slightly to contain the entire exclusion disk.
             quad_segs = 32      # number of linear segments ub a quarter circle
-            buffer_radius = exclusion_radius / np.cos(np.pi / (4 * quad_segs))
+            buffer_radius = exclusion_radius[idx] / np.cos(np.pi / (4 * quad_segs))
 
             # Create exclusion zones
             exclusion_zones = sha.union_all([
