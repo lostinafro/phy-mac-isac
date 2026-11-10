@@ -25,7 +25,7 @@ class AnomalyTrackingScenario(SimulationEnvironment):
     wireless_type = anomaly_params.WirelessParams
     metrics_type = anomaly_params.Metrics
 
-    def __init__(self, *args, **kwargs):
+    def __init__(self, *args, perfect_csi: bool = True, **kwargs):
         if kwargs.get("load_scene", False) or kwargs.get("scene_name") is not None:
             raise ValueError("AnomalyTrackingScenario uses load_scene=False and no RT scene")
         kwargs["load_scene"] = False
@@ -35,7 +35,7 @@ class AnomalyTrackingScenario(SimulationEnvironment):
         self.channel_model = None
         self.channel_generator = None
         self._topology_batch_size = None
-        self._perfect_csi = kwargs.get("perfect_csi", True)
+        self._perfect_csi = perfect_csi
 
     def _build_base_scene(self,
                           scene_name: str | None,
@@ -231,6 +231,9 @@ class AnomalyTrackingScenario(SimulationEnvironment):
         # Start allocation toward channel generation
         slot_indices = np.flatnonzero(allocation >= 0)
         ue_idx = allocation[slot_indices]
+        # Check allocation is unique (considered system constraint)
+        if np.any(np.unique_counts(ue_idx)[1] > 1):
+            raise ValueError("UE IDs must be unique (UEs cannot be allocated to multiple slots)")
 
         # Frame starts now (The first value of frame is -1, i.e., the initialization frame.)
         self.frame += 1
@@ -322,6 +325,7 @@ def generate_environment(episode,
         AnomalyTrackingScenario.shared_type,
         AnomalyTrackingScenario.wireless_type,
         SimulationEnvironment,
+        AnomalyTrackingScenario,
         AnomalyTrackingScenario.setup_scenario,
         exclude={"self", "episode", "shared_params", "wireless_params", "c"},
         name="env_kwargs"
@@ -329,7 +333,8 @@ def generate_environment(episode,
     # --- Build environment ---
     sha_kwargs = ut.filter_call_kwargs(AnomalyTrackingScenario.shared_type, **env_kwargs)
     wir_kwargs = ut.filter_call_kwargs(AnomalyTrackingScenario.wireless_type, **env_kwargs)
-    ini_kwargs = ut.filter_call_kwargs(AnomalyTrackingScenario, **env_kwargs)
+    ini_kwargs = ut.filter_call_kwargs(SimulationEnvironment, **env_kwargs)
+    ini_kwargs.update(ut.filter_call_kwargs(AnomalyTrackingScenario, **env_kwargs))
     env = AnomalyTrackingScenario(episode, sha_kwargs, wir_kwargs, **ini_kwargs)
     # Setup scenario
     env.setup_scenario(**ut.filter_call_kwargs(env.setup_scenario, **env_kwargs))
@@ -346,11 +351,15 @@ if __name__ == "__main__":
     num_clusters = 10
     cluster_size = 4
     env_kwargs = {"num_ue": num_ue, "num_slots": num_slots, "num_frames": 10,
-                  "num_clusters": num_clusters, "cluster_size": cluster_size}
-    env = generate_environment(1, env_kwargs=env_kwargs, device="cuda")
+                  "num_clusters": num_clusters, "cluster_size": cluster_size,
+                  "perfect_csi": False}
+    env = generate_environment(1, env_kwargs=env_kwargs, device="cpu")
     for k in range(env.c.num_frames):
-        allocation = env.rng.integers(-1, num_ue, size=num_slots)
+        num_silences = env.rng.integers(0, num_slots)
+        num_collisions = env.rng.integers(0, num_slots - num_silences)
+        allocation = np.full(num_slots, -1)
+        allocation[:num_slots - num_silences - num_collisions] = env.rng.choice(num_ue, size=num_slots - num_silences - num_collisions, replace=False)
+        if num_collisions > 0:
+            allocation[-num_collisions:] = -2
+        allocation = env.rng.permutation(allocation)
         results.append(env.step(allocation))
-
-    # TODO: check the CDF of the sinr and bler before working on the anomaly project
-    #env.metrics.sinr_eff[k]
