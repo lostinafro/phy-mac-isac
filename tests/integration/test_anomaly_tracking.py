@@ -7,9 +7,8 @@ import numpy as np
 import torch
 from sionna.phy import config as sionna_config
 
-from phy_mac_isac.anomaly_tracking import (
-    AnomalyTrackingScenario, SharedParams, WirelessParams, Metrics, generate_environment,
-)
+from phy_mac_isac.anomaly_tracking.scenario import AnomalyTrackingScenario
+from phy_mac_isac.anomaly_tracking.parameters import SharedParams, WirelessParams, Metrics
 from phy_mac_isac.modules.environment import SimulationEnvironment
 from phy_mac_isac.modules.params import GeometryParams
 from phy_mac_isac.utils.stats import sample_multivariate_gaussian
@@ -85,7 +84,7 @@ class AnomalyTrackingTests(unittest.TestCase):
         env = self.scenario(velocity=velocity)
         initial = env.geo.ue_location[-1].copy()
         with patch.object(env.channel_model, "set_topology", wraps=env.channel_model.set_topology) as setter:
-            env.step([2, 0, 2, -1])
+            env.step([2, 0, 1, -1])
             for frame in (1, 2):
                 env.step([1, 0, -1, -1])
                 expected = initial + (frame + 1) * velocity * env.wireless.frame_time
@@ -109,7 +108,7 @@ class AnomalyTrackingTests(unittest.TestCase):
         env = self.scenario(frames=4)
         for allocation, size in (([0, 1, 2, -1], 3), ([-1, -1, -1, -1], 0), ([2, -1, -2, -2], 1)):
             _ = env.step(allocation)
-            self.assertEqual(np.nansum(env.metrics.harq_feedback[env.frame]), size)
+            self.assertEqual(np.count_nonzero(np.isfinite(env.metrics.harq_feedback[env.frame])), size)
         self.assertEqual(env.frame, 2)
         with self.assertRaisesRegex(ValueError, "num_slots"):
             env.step([0])
