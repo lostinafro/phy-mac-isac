@@ -223,8 +223,8 @@ class AnomalyTrackingScenario(SimulationEnvironment):
 
         # Check allocation vector
         allocation = np.asarray(allocation)
-        if allocation.ndim != 1 or not np.issubdtype(allocation.dtype, np.integer):
-            raise ValueError("allocation must be a 1D sequence of integer UE IDs")
+        if allocation.ndim != 1 or allocation.shape[0] != self.S or not np.issubdtype(allocation.dtype, np.integer):
+            raise ValueError("allocation must be a 1D sequence of integer UE IDs of len(self.num_slots)")
         if np.any((allocation < -2) | (allocation >= self.U)):
             raise ValueError("UE IDs must lie in [0,num_ue); use -1 for idle; -2 for collision")
 
@@ -245,7 +245,7 @@ class AnomalyTrackingScenario(SimulationEnvironment):
             if tuple(channel.shape) != shape:
                 raise ValueError(f"Channel generator returned {tuple(channel.shape)}, expected {shape}")
         else:
-            channel = torch.empty(shape, dtype=torch.complex64)
+            return self.metrics.decoded(self.frame), self.metrics.successful_ues(self.frame), np.empty((0,))
 
         # Compute channel estimation
         channel_estimate = self._estimate_channel(channel)
