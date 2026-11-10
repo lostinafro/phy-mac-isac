@@ -11,7 +11,7 @@ __all__ = [
 
 
 def __getattr__(name):
-    if name in {"AnomalyTrackingScenario", "generate_ep_environment"}:
+    if name in {"AnomalyTrackingScenario", "generate_environment"}:
         from importlib import import_module
 
         module = import_module(".scenario", __name__)
