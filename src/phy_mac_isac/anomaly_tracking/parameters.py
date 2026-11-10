@@ -139,6 +139,7 @@ class WirelessParams(BaseWireless):
             raise ValueError("channel_estimation_error_variance must be finite and nonnegative")
 
 
+@dataclass
 class Metrics(BaseMetrics):
     """Compact occupied-slot channels and PHY results for a single frame.
 
