@@ -8,7 +8,7 @@ import torch
 from sionna.phy import config as sionna_config
 
 from phy_mac_isac.anomaly_tracking.scenario import AnomalyTrackingScenario
-from phy_mac_isac.anomaly_tracking.parameters import SharedParams, WirelessParams, Metrics
+from phy_mac_isac.anomaly_tracking.parameters import SharedParams, WirelessParams, Metrics, UE_HEIGHT
 from phy_mac_isac.modules.environment import SimulationEnvironment
 from phy_mac_isac.modules.params import GeometryParams
 from phy_mac_isac.utils.stats import sample_multivariate_gaussian
@@ -76,7 +76,7 @@ class AnomalyTrackingTests(unittest.TestCase):
         from shapely import Point
         for position in env.geo.ue_location[-1]:
             self.assertTrue(env.geo.environment_shape.contains(Point(position[:2])))
-            self.assertEqual(position[2], 1.5)
+            self.assertEqual(position[2], UE_HEIGHT)
         np.testing.assert_array_equal(env.geo.ue_vel_cov, np.zeros((5, 3, 3)))
 
     def test_topology_uses_current_frame_and_allocation_order(self):
