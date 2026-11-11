@@ -50,7 +50,7 @@ class AnomalyTrackingScenario(SimulationEnvironment):
                               min_dist: np.ndarray = 10 * np.ones(2),
                               margin: float = 0.99,
                               exclusion_centers: np.ndarray | None = None,
-                              exclusion_radius: float = 10.):
+                              exclusion_radius: float | np.ndarray = 10.):
         """First generate the cluster center randomly. Then, place the UEs around them randomly.
         Finally, place the unclustered UEs randomly throughout the whole environment.
         """
@@ -89,18 +89,24 @@ class AnomalyTrackingScenario(SimulationEnvironment):
         # Check how many UE are left
         unclustered_ues = self.c.num_ue - clustered_coords.shape[0]
         if unclustered_ues:
+            # Merge previous generated positions in the exclusion areas
+            exclusion_centers = np.vstack([
+                np.hstack([clustered_coords, np.zeros((clustered_coords.shape[0], 1))]),
+                exclusion_centers,
+            ])
+            exclusion_radii = np.vstack([np.ones(clustered_coords.shape[0]), exclusion_radius])
             # Now sample the unclustered device randomly
             unclustered_coords = ut.random_2d_positioning(
                 self.geo.environment_shape,
                 n=unclustered_ues,
                 min_dist=np.ones(2),
                 margin=margin,
-                exclusion_centers=clustered_coords,
-                exclusion_radius=1,
+                exclusion_centers=exclusion_centers,
+                exclusion_radius=exclusion_radii,
                 rng=self.rng
             )[0]
         else:
-            unclustered_coords = []
+            unclustered_coords = np.empty((0, 2))
 
         coords = np.vstack([clustered_coords, unclustered_coords])
 
@@ -115,7 +121,8 @@ class AnomalyTrackingScenario(SimulationEnvironment):
                        init_ue_pos: np.ndarray | None = None,
                        ue_vel_mean: np.ndarray | float= 0.,
                        ue_vel_cov: np.ndarray | float = 0.,
-                       ue_ap_min_distance: float = 10.):
+                       ue_ap_min_distance: float = 10.,
+                       ap_orientation: str | np.ndarray = "fixed"):
         """Generate or restore base geometry; default AP height is 10 m (UMi)."""
         super().setup_scenario(
             ap_pos=np.array([[0., 0., 10.0]]) if ap_pos is None else ap_pos,
@@ -123,7 +130,8 @@ class AnomalyTrackingScenario(SimulationEnvironment):
             init_ue_pos=init_ue_pos,
             ue_vel_mean=ue_vel_mean,
             ue_vel_cov=ue_vel_cov,
-            ue_ap_min_distance=ue_ap_min_distance)
+            ue_ap_min_distance=ue_ap_min_distance,
+            ap_orientation=ap_orientation)
 
     def setup_modules(self,
                       ra_module = None,
@@ -248,6 +256,8 @@ class AnomalyTrackingScenario(SimulationEnvironment):
             if tuple(channel.shape) != shape:
                 raise ValueError(f"Channel generator returned {tuple(channel.shape)}, expected {shape}")
         else:
+            # If only silent or collision slot, return empty. The collisions cannot be stored because the BS does not
+            # know the UE IDs
             return self.metrics.decoded(self.frame), self.metrics.successful_ues(self.frame), np.empty((0,))
 
         # Compute channel estimation
