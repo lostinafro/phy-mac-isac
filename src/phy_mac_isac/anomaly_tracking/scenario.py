@@ -127,7 +127,7 @@ class AnomalyTrackingScenario(SimulationEnvironment):
                        ue_vel_mean: np.ndarray | float= 0.,
                        ue_vel_cov: np.ndarray | float = 0.,
                        ue_ap_min_distance: float = 10.,
-                       ap_orientation: str | np.ndarray = "azimuth"):
+                       ap_orientation: str | np.ndarray = "fixed"):
         """Generate or restore base geometry; default AP height is 10 m (UMi)."""
         super().setup_scenario(
             ap_pos=np.array([[0., 0., 10.0]]) if ap_pos is None else ap_pos,

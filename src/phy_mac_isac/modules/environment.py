@@ -555,8 +555,8 @@ class SimulationEnvironment:
             # Direction vector from the array to the center in the xy-plane only (z=0)
             xy_direction = self.geo.center[:2] - ap_cen_pos[..., :2]
             dist = np.linalg.norm(xy_direction, axis=-1)
-            xy_direction[dist == 0] = np.array([1, 0])
-            direction = np.hstack((xy_direction, np.zeros((self.L, 1))))
+            xy_direction[dist == 0] = np.array([1., 0.])
+            direction = np.hstack((xy_direction, np.zeros((self.L, 1))), dtype=float)
         elif orientation == "random":
             # Direction vector randomly chosen
             direction = 2 * (self.rng.random((self.L, 3)) - 0.5)
