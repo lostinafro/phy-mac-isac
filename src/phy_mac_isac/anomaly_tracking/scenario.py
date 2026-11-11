@@ -92,12 +92,12 @@ class AnomalyTrackingScenario(SimulationEnvironment):
             if exclusion_centers is not None:
                 # Merge previous generated positions in the exclusion areas
                 exclusion_centers = np.vstack([
-                    np.hstack([clustered_coords, height]),
+                    np.hstack([clustered_coords, height[:-unclustered_ues]]),
                     exclusion_centers,
                 ])
                 exclusion_radii = np.concatenate([np.ones(clustered_coords.shape[0]), exclusion_radius])
             else:
-                exclusion_centers = np.hstack([clustered_coords, height])
+                exclusion_centers = np.hstack([clustered_coords, height[:-unclustered_ues]])
                 exclusion_radii = np.ones(clustered_coords.shape[0])
 
             # Now sample the unclustered device randomly

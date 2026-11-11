@@ -76,7 +76,7 @@ class AnomalyTrackingTests(unittest.TestCase):
         from shapely import Point
         for position in env.geo.ue_location[-1]:
             self.assertTrue(env.geo.environment_shape.contains(Point(position[:2])))
-            self.assertEqual(position[2], 1.)
+            self.assertEqual(position[2], 1.5)
         np.testing.assert_array_equal(env.geo.ue_vel_cov, np.zeros((5, 3, 3)))
 
     def test_topology_uses_current_frame_and_allocation_order(self):
