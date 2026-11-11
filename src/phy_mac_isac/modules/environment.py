@@ -196,7 +196,8 @@ class SimulationEnvironment:
                        init_ue_pos: np.ndarray | None = None,
                        ue_vel_mean: np.ndarray | float = 0.,
                        ue_vel_cov: np.ndarray | float = params.VEL_STD,
-                       ue_ap_min_distance: float = 0.):
+                       ue_ap_min_distance: float = 0.,
+                       ap_orientation: str | np.ndarray = "center"):
         """Set up the actual environment as it was at frame -1 (initial condition of the system).
 
         This method initializes the physical environment by placing Access Points (APs) and User Equipment (UEs),
@@ -225,6 +226,8 @@ class SimulationEnvironment:
             - ``np.ndarray``: (U, 3, 3) array of covariance matrices, one for each UE.
 
         :param ue_ap_min_distance: Minimum distance between UEs and APs in meters. Default is 0.
+        :param ap_orientation: str, it represents the orientation policy of the APs. It can be "center", "fixed",
+            "azimuth", "random", or an np.ndarray of size (L, 3) providing the orientation of each AP.
 
         :raises AssertionError: If ``ue_vel_cov`` is an ndarray but does not have shape (U, 3, 3).
         :raises AttributeError: If ``ue_vel_cov`` is not an ndarray (handled internally to create default covariance).
@@ -240,7 +243,7 @@ class SimulationEnvironment:
            - Estimated variables (e.g., ``hat_pos_ue``, ``cov_pos_prior``) are initialized to default values.
 
         .. seealso::
-           :meth:`place_aps`, :meth:`ue_random_positioning`, :meth:`compute_ue_ap_distance`
+           :meth:`place_aps`, :meth:`ue_random_positioning`
         """
         ### Check input and populate geometry variables
         if self._load_env:
@@ -252,7 +255,7 @@ class SimulationEnvironment:
             antenna_spacing = antenna_spacing or 1 / 2
 
             # Place APs, UEs and compute their distances
-            ap_pos, ap_rot, ant_pos = self.place_aps(antenna_spacing, ap_pos)
+            ap_pos, ap_rot, ant_pos = self.place_aps(antenna_spacing, ap_pos, ap_orientation)
             if init_ue_pos is None:
                 # Project the minimum distance on the floor (z = 0)
                 min_ue_ap_dist_floor = np.sqrt(np.clip(ue_ap_min_distance ** 2 - ap_pos[:, 2] ** 2, 0, None))
@@ -495,13 +498,14 @@ class SimulationEnvironment:
     def place_aps(self,
                   antenna_spacing : float,
                   ap_location : float | np.ndarray | None = None,
-                  orientation_policy: str = "center") -> tuple:
+                  orientation: str | np.ndarray = "center") -> tuple:
         """Generate APs positions.
         Returning the position of the APs and their antennas assuming symmetric antenna positioning
 
         :param antenna_spacing: float, it represents the inter-element distance in a symmetric placement
         :param ap_location: float: z-axis position of the APs; or ndarray: absolute position of the center of the array (AP)
-        :param orientation_policy: str, it represents the orientation policy of the APs. It can be "center", "fixed", "azimuth", or "random".
+        :param orientation: str, it represents the orientation policy of the APs. It can be "center", "fixed", "azimuth",
+            "random", or an np.ndarray of size (L, 3) providing the orientation of each AP.
 
         :returns: tuple, containing the AP positions (np.ndarray), AP rotation class, antenna positions (np.ndarray), and sionna.rt PlanarArray
         """
@@ -536,16 +540,17 @@ class SimulationEnvironment:
 
         ## Point the array to the center of the environment through Rodriguez formula
         # Direction vector from the array to the center
-        if orientation_policy == "center":
+        if orientation == "center":
             direction = self.geo.center - ap_cen_pos
-            # TODO: fixed should consider as an input of setup_scenario and fallback to the ap_array pointing only if ap_orientation is None
-        elif orientation_policy == "fixed":
-            direction = ap_array_pointing
-        elif orientation_policy == "azimuth":
-            # TODO: to be check for tensor consistency
-            direction = np.stack((self.geo.center - ap_cen_pos)[..., :2], np.zeros(self.L))
-        elif orientation_policy == "random":
-            direction = np.random.rand(3)
+        elif orientation == "azimuth":
+            direction = np.hstack((self.geo.center[:2] - ap_cen_pos[..., :2], np.zeros((self.L, 1))))
+        elif orientation == "random":
+            direction = 2 * (self.rng.random((self.L, 3)) - 0.5)
+        elif isinstance(orientation, np.ndarray):
+            assert orientation.shape == (self.L, 3), "Invalid orientation policy shape, it must be (L, 3)"
+            direction = orientation
+        elif orientation == "fixed":
+            direction = np.tile(ap_array_pointing[np.newaxis], (self.L, 1))
         else:
             raise ValueError("Invalid orientation policy")
 
@@ -572,7 +577,7 @@ class SimulationEnvironment:
                               min_dist: np.ndarray = np.ones(2),
                               margin: float = 0.95,
                               exclusion_centers: np.ndarray | None = None,
-                              exclusion_radius: float = 0.) -> np.ndarray:
+                              exclusion_radius: float | np.ndarray = 0.) -> np.ndarray:
         """Generate UE random positions with minimum distance >= min_dist.
         Modified version of https://stackoverflow.com/questions/27499139/how-can-i-set-a-minimum-distance-constraint-for-generating-points-with-numpy-ran
         Lloyd relaxation generates a Voronoi diagram creating a quasi uniform grid for the UEs. Then, random
