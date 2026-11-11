@@ -193,7 +193,7 @@ class SimulationEnvironment:
     def setup_scenario(self,
                        ap_pos: float | np.ndarray | None = None,
                        antenna_spacing: float | None = None,
-                       init_ue_pos: np.ndarray | None = None,
+                       init_ue_pos: float | np.ndarray = params.UE_HEIGHT,
                        ue_vel_mean: np.ndarray | float = 0.,
                        ue_vel_cov: np.ndarray | float = params.VEL_STD,
                        ue_ap_min_distance: float = 0.,
@@ -213,7 +213,8 @@ class SimulationEnvironment:
             If ``None``, defaults to half-wavelength spacing (λ/2).
 
         :param init_ue_pos: initial positions of the User Equipment devices. Can be:
-            - ``None``: UEs are placed randomly within the area boundaries.
+            - ``None``: UEs are placed randomly within the area boundaries at height 1.5 m.
+            - ``float``: z-axis height for each UE placement.
             - ``np.ndarray``: Explicit (U, 3) array of UE positions.
 
         :param ue_vel_mean: velocity mean for the UEs in meters/seconds. Can be:
@@ -227,10 +228,10 @@ class SimulationEnvironment:
 
         :param ue_ap_min_distance: Minimum distance between UEs and APs in meters. Default is 0.
         :param ap_orientation: str, it represents the orientation policy of the APs. It can be "center", "fixed",
-            "azimuth", "random", or an np.ndarray of size (L, 3) providing the orientation of each AP.
+            "azimuth", "random", or a np.ndarray of size (L, 3) providing the orientation of each AP.
 
-        :raises AssertionError: If ``ue_vel_cov`` is an ndarray but does not have shape (U, 3, 3).
-        :raises AttributeError: If ``ue_vel_cov`` is not an ndarray (handled internally to create default covariance).
+        :raises AssertionError: If ``ue_vel_cov`` is a ndarray but does not have shape (U, 3, 3).
+        :raises AttributeError: If ``ue_vel_cov`` is not a ndarray (handled internally to create default covariance).
 
         :returns: None. This method updates instance attributes in place.
 
@@ -256,11 +257,16 @@ class SimulationEnvironment:
 
             # Place APs, UEs and compute their distances
             ap_pos, ap_rot, ant_pos = self.place_aps(antenna_spacing, ap_pos, ap_orientation)
-            if init_ue_pos is None:
-                # Project the minimum distance on the floor (z = 0)
-                min_ue_ap_dist_floor = np.sqrt(np.clip(ue_ap_min_distance ** 2 - ap_pos[:, 2] ** 2, 0, None))
-                init_ue_pos = self.ue_random_positioning(exclusion_centers=ap_pos,
-                                                         exclusion_radius=min_ue_ap_dist_floor)
+            if isinstance(init_ue_pos, float):
+                # Project the minimum distance on the ue_height (z = 0)
+                min_ue_ap_dist_floor = np.sqrt(
+                    np.clip(ue_ap_min_distance ** 2 - (ap_pos[:, 2] - init_ue_pos) ** 2, 0, None)
+                )
+                init_ue_pos = self.ue_random_positioning(
+                    height=init_ue_pos,
+                    exclusion_centers=ap_pos,
+                    exclusion_radius=min_ue_ap_dist_floor,
+                )
 
             # Set velocity mean and covariance
             if isinstance(ue_vel_mean, (float, int)):
@@ -505,7 +511,7 @@ class SimulationEnvironment:
         :param antenna_spacing: float, it represents the inter-element distance in a symmetric placement
         :param ap_location: float: z-axis position of the APs; or ndarray: absolute position of the center of the array (AP)
         :param orientation: str, it represents the orientation policy of the APs. It can be "center", "fixed", "azimuth",
-            "random", or an np.ndarray of size (L, 3) providing the orientation of each AP.
+            "random", or a np.ndarray of size (L, 3) providing the orientation of each AP.
 
         :returns: tuple, containing the AP positions (np.ndarray), AP rotation class, antenna positions (np.ndarray), and sionna.rt PlanarArray
         """
@@ -534,28 +540,34 @@ class SimulationEnvironment:
         # Create the base array through Sionna built-in method
         ap_array = self._default_mimo_array(antenna_spacing)
         # Consider that the default PanelArray in Sionna points towards the +X axis
-        ap_array_pointing = np.array([1, 0, 0])
+        ap_array_pointing = np.array([1., 0., 0.])
         # Take local antenna positions for a single AP
         local_positions = np.array(ap_array.positions(self.wireless.wavelength)).T
 
         ## Point the array to the center of the environment through Rodriguez formula
-        # Direction vector from the array to the center
-        if orientation == "center":
+        if isinstance(orientation, np.ndarray):
+            assert orientation.shape == (self.L, 3), "Invalid orientation policy shape, it must be (L, 3)"
+            direction = np.array(orientation, dtype=float, copy=True)
+        elif orientation == "center":
+            # Direction vector from the array to the center
             direction = self.geo.center - ap_cen_pos
         elif orientation == "azimuth":
-            direction = np.hstack((self.geo.center[:2] - ap_cen_pos[..., :2], np.zeros((self.L, 1))))
+            # Direction vector from the array to the center in the xy-plane only (z=0)
+            xy_direction = self.geo.center[:2] - ap_cen_pos[..., :2]
+            dist = np.linalg.norm(xy_direction, axis=-1)
+            xy_direction[dist == 0] = np.array([1, 0])
+            direction = np.hstack((xy_direction, np.zeros((self.L, 1))))
         elif orientation == "random":
+            # Direction vector randomly chosen
             direction = 2 * (self.rng.random((self.L, 3)) - 0.5)
-        elif isinstance(orientation, np.ndarray):
-            assert orientation.shape == (self.L, 3), "Invalid orientation policy shape, it must be (L, 3)"
-            direction = orientation
         elif orientation == "fixed":
+            # Direction vector fixed as the array pointing
             direction = np.tile(ap_array_pointing[np.newaxis], (self.L, 1))
         else:
             raise ValueError("Invalid orientation policy")
 
         # Check the direction to be non-null
-        distance = np.linalg.norm(direction, axis=1)
+        distance = np.linalg.norm(direction, axis=-1)
         if np.any(distance == 0):
             raise ValueError("AP position coincides with its pointing target")
         direction /= distance[:, np.newaxis]
@@ -573,7 +585,7 @@ class SimulationEnvironment:
         return ap_cen_pos, ap_rotation, ap_ant_pos
 
     def ue_random_positioning(self,
-                              height: float | np.ndarray = params.UE_HEIGHT,
+                              height: float | np.ndarray,
                               min_dist: np.ndarray = np.ones(2),
                               margin: float = 0.95,
                               exclusion_centers: np.ndarray | None = None,
