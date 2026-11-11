@@ -46,7 +46,7 @@ class AnomalyTrackingScenario(SimulationEnvironment):
         return super()._build_base_scene(scene_name, area_coordinates, default_room_side)
 
     def ue_random_positioning(self,
-                              height: float | np.ndarray = anomaly_params.UE_HEIGHT,
+                              height: float | np.ndarray,
                               min_dist: np.ndarray = 10 * np.ones(2),
                               margin: float = 0.99,
                               exclusion_centers: np.ndarray | None = None,
@@ -89,12 +89,17 @@ class AnomalyTrackingScenario(SimulationEnvironment):
         # Check how many UE are left
         unclustered_ues = self.c.num_ue - clustered_coords.shape[0]
         if unclustered_ues:
-            # Merge previous generated positions in the exclusion areas
-            exclusion_centers = np.vstack([
-                np.hstack([clustered_coords, np.zeros((clustered_coords.shape[0], 1))]),
-                exclusion_centers,
-            ])
-            exclusion_radii = np.vstack([np.ones(clustered_coords.shape[0]), exclusion_radius])
+            if exclusion_centers is not None:
+                # Merge previous generated positions in the exclusion areas
+                exclusion_centers = np.vstack([
+                    np.hstack([clustered_coords, height]),
+                    exclusion_centers,
+                ])
+                exclusion_radii = np.concatenate([np.ones(clustered_coords.shape[0]), exclusion_radius])
+            else:
+                exclusion_centers = np.hstack([clustered_coords, height])
+                exclusion_radii = np.ones(clustered_coords.shape[0])
+
             # Now sample the unclustered device randomly
             unclustered_coords = ut.random_2d_positioning(
                 self.geo.environment_shape,
@@ -118,11 +123,11 @@ class AnomalyTrackingScenario(SimulationEnvironment):
     def setup_scenario(self,
                        ap_pos: float | np.ndarray | None = None,
                        antenna_spacing: float | None = None,
-                       init_ue_pos: np.ndarray | None = None,
+                       init_ue_pos: float | np.ndarray = anomaly_params.UE_HEIGHT,
                        ue_vel_mean: np.ndarray | float= 0.,
                        ue_vel_cov: np.ndarray | float = 0.,
                        ue_ap_min_distance: float = 10.,
-                       ap_orientation: str | np.ndarray = "fixed"):
+                       ap_orientation: str | np.ndarray = "azimuth"):
         """Generate or restore base geometry; default AP height is 10 m (UMi)."""
         super().setup_scenario(
             ap_pos=np.array([[0., 0., 10.0]]) if ap_pos is None else ap_pos,
