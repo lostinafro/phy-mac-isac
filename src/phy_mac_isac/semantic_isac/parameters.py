@@ -18,7 +18,6 @@ NUM_UE = 12
 VEL_MAG = 5.                 # [m/s]
 VEL_STD = 10.                 # [m/s]
 NUM_REGIONS = 16
-UE_HEIGHT = 1.5             # [m]
 
 # Wireless
 CARRIER = 3e9       # [Hz]
