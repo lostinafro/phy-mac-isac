@@ -19,7 +19,7 @@ NUM_UE = 100
 NUM_CLUSTERS = 20
 CLUSTER_SIZE = 4
 NUM_REGIONS = 1
-UE_HEIGHT = 1             # [m]
+UE_HEIGHT = 1.5             # [m]
 ROOM_SIDE = 150
 
 # Wireless
