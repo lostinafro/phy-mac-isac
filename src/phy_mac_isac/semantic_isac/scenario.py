@@ -122,7 +122,7 @@ class SemanticISACScenario(SimulationEnvironment):
         channel_cf *= self.ra_module.broadcast_slot_ue_mask(ue_slot_map) * self.ra_module.broadcast_ap_ue_mask()
 
         # Perform (abstracted) usual centralized CF-mMIMO transmission
-        sinr_eff, se_eff = self.transmission_module(channel_cf)
+        sinr_eff, se_eff = self.transmission_module(channel_cf, active_mask=ue_slot_map)
 
         ### Update queues
         # Checking SE achievability
