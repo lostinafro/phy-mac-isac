@@ -3,6 +3,8 @@ import numpy as np
 import torch
 import matplotlib.pyplot as plt
 from shapely.geometry import MultiPolygon
+from scipy.stats import ecdf
+
 from sionna.phy.channel import GenerateOFDMChannel
 from sionna.phy.channel.tr38901 import PanelArray, UMi
 from sionna.phy import config as sionna_config
@@ -290,7 +292,7 @@ class AnomalyTrackingScenario(SimulationEnvironment):
                             bler=bler)
 
         if self.debug:
-            self._debugging(channel=channel, )
+            self._debugging(channel=channel)
 
         return self.metrics.decoded(self.frame), self.metrics.successful_ues(self.frame), bler
 
@@ -309,6 +311,9 @@ class AnomalyTrackingScenario(SimulationEnvironment):
     def _debugging(self, every: int = 100, channel: np.ndarray | None = None):
         every = max(1, self.c.num_frames // every)
         if self.debug and (not (self.frame % every) or self.frame == self.c.num_frames - 1):
+            # Check current allocation
+            allocated = np.sort(env.metrics.allocation[self.frame])
+
             if self.frame == 0:
                 frame_range = np.array([-1, 0])
             else:
@@ -322,7 +327,11 @@ class AnomalyTrackingScenario(SimulationEnvironment):
                 print(f"Scene fig. died in some way. Was it you?: {e}")
 
             try:
-                self.channel_fig = self.plot_channel(channel, fig=getattr(self, "channel_fig", None))
+                # Create zero array of standard dimensions to be filled with values
+                # [num_active_slots, num_rx, num_rx_ant, num_tx, num_tx_antennas, num_ofdm_symbols, num_subcarriers]
+                h = np.zeros((self.S, self.L, self.M, 1, 1, self.T, self.F), dtype=np.complex128)
+                h[allocated > 0] = channel
+                self.channel_fig = self.plot_channel(h, fig=getattr(self, "channel_fig", None))
                 self.channel_fig.canvas.draw_idle()
                 plt.pause(0.001)
             except Exception as e:
@@ -338,8 +347,7 @@ class AnomalyTrackingScenario(SimulationEnvironment):
                 msg3 = [f"{float(a):.2f}" for a in self.geo.ue_velocity[frame_range[-1], u]]
                 print(f"UE {u}: old_pos={msg1}, new_pos={msg2}, new_vel={msg3}")
 
-            # Check current allocation
-            allocated = np.sort(env.metrics.allocation[self.frame])
+            # Print allocation
             allocated = allocated[allocated >= 0]
             msg = ' '.join([f"{u:4d}" for u in allocated])
             print(f"Allocated UEs are: {msg}")
@@ -358,9 +366,9 @@ class AnomalyTrackingScenario(SimulationEnvironment):
 
             print("\nAvg.:")
             msg = [f"{float(10*np.log10(s)):.1f}" for s in np.nanmean(self.metrics.sinr_eff[frame_range], axis=0)]
-            print(f"UEs avg SINR eff {frame_range[0]:02d}/{self.frame:02d} queue status is: \t{' '.join(msg)}")
-            msg = [f"{float(b):.1f}" for b in np.nanmean(self.metrics.bler[frame_range], axis=0)]
-            print(f"UEs avg BLER {frame_range[0]:02d}/{self.frame:02d} queue status is: \t{' '.join(msg)}")
+            print(f"UEs avg SINR {frame_range[0]:02d}/{self.frame:02d} is: \t{' '.join(msg)}")
+            msg = [f"{float(b):.2f}" for b in np.nanmean(self.metrics.bler[frame_range], axis=0)]
+            print(f"UEs avg BLER {frame_range[0]:02d}/{self.frame:02d} is: \t{' '.join(msg)}")
 
             print("----------------------- END FRAME -------------------------\n")
 
@@ -428,7 +436,7 @@ if __name__ == "__main__":
     num_slots = 10
     num_clusters = 10
     cluster_size = 4
-    env_kwargs = {"num_ue": num_ue, "num_slots": num_slots, "num_frames": 10,
+    env_kwargs = {"num_ue": num_ue, "num_slots": num_slots, "num_frames": 10000,
                   "num_clusters": num_clusters, "cluster_size": cluster_size,
                   "perfect_csi": False, "debugging": True}
     env = generate_environment(1, env_kwargs=env_kwargs, device="cpu")
@@ -441,3 +449,29 @@ if __name__ == "__main__":
             allocation[-num_collisions:] = -2
         allocation = env.rng.permutation(allocation)
         results.append(env.step(allocation))
+
+    # Plot CDF of results
+    # Set LaTeX as the default text interpreter
+    plt.rcParams['text.usetex'] = True
+    plt.rcParams['font.family'] = 'serif'
+    plt.rcParams['font.serif'] = ['Computer Modern Roman']  # LaTeX default font
+
+    metrics = [env.metrics.bler, 10 * np.log10(env.metrics.sinr_eff), env.metrics.mcs_index]
+    metrics_label = ["bler", "sinr_eff", "mcs_index"]
+    fig, ax = plt.subplots(ncols=len(metrics), figsize=(15, 5))
+
+    for i, metric in enumerate(metrics):
+        samples = metric[:-1].flatten()[~np.isnan(metric[:-1].flatten())]
+        mean = np.mean(samples)
+        perc_90 = np.percentile(samples, 90)
+        ecdf_res = ecdf(samples)
+        ecdf_res.cdf.plot(ax=ax[i])
+        ax[i].set_title(f"{metrics_label[i]}")
+        ax[i].grid(True)
+        ax[i].set_ylim(0, 1.01)
+        ax[i].axvline(x=mean, color='r', linestyle='--', label=f"Avg.: {mean:.3f}")
+        ax[i].axvline(x=perc_90, color='g', linestyle='--', label=f"90th perc: {perc_90:.3f}")
+        ax[i].legend()
+    fig.suptitle("CDF of Metrics")
+    fig.tight_layout()
+    fig.show()
