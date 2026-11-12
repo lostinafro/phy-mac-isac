@@ -198,7 +198,8 @@ class SemanticISACScenario(SimulationEnvironment):
                 print(f"Probably the figure dies in some way. Was it you?: {e}")
 
             try:
-                self.channel_fig = self.plot_channel(channel, fig=getattr(self, "channel_fig", None))
+                channel_reshaped = np.expand_dims(np.moveaxis(channel.copy(), 3, 0), axis=4)  # [S, L, M, U, 1, T, F]
+                self.channel_fig = self.plot_channel(channel_reshaped, fig=getattr(self, "channel_fig", None))
                 self.channel_fig.canvas.draw_idle()
                 plt.pause(0.001)
             except Exception as e:
@@ -244,7 +245,7 @@ class SemanticISACScenario(SimulationEnvironment):
             # Check issues in the oracle if any
             unachievable_err = np.nonzero(se_achievable < oracle_se[slot_idx, ue_idx])[0]
             if len(unachievable_err) > 0:
-                print(f"ERROR: Unachievable oracle rate for UE {unachievable_err}")
+                print(f"ERROR: Unachievable oracle rate for UE {ue_idx[unachievable_err]}")
 
             print("\nCOMMS:")
             msg = [f"{float(s):.2f}" for s in self.metrics.se_achievable[self.frame]]
@@ -346,6 +347,7 @@ def run_episode(episode: int,
     if device is None:
         device = "cpu"
 
+    sionna_config.device = device
     device = torch.device(device)
 
     if device.type == "cuda" and not torch.cuda.is_available():
@@ -472,5 +474,5 @@ if __name__ == "__main__":
     env_args = {"debugging": True, "num_frames": 100, "num_ue": num_ue, "traffic_avg": avg_datasize,
                 "queue_max": queue_max, "num_regions": 32, "ue_vel_mean": 5}
     step_args = {"cfo": False}
-    summary = run_episode(1, ra.RoundRobinAllocation, env_kwargs=env_args, step_kwargs=step_args)
+    summary = run_episode(1, ra.RoundRobinAllocation, env_kwargs=env_args, step_kwargs=step_args, device="cuda:0")
     print(summary)
