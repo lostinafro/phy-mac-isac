@@ -424,7 +424,6 @@ class SimulationEnvironment:
                      fig: plt.Figure | None = None,
                      tol: float = 1e-2) -> plt.Figure:
         """Plot the channel of a single ap-ant-ue for the current frame as a sanity check."""
-
         # Print four equispaced subcarriers
         subcarriers = np.linspace(0, self.F, 4, dtype=np.int32, endpoint=False)
         freqs_ghz = (self.wireless.freqs + self.wireless.carrier) * 1e-9      # [GHz]
@@ -437,10 +436,10 @@ class SimulationEnvironment:
         # [num_active_slots, num_rx, num_rx_ant, num_tx, num_tx_antennas, num_ofdm_symbols, num_subcarriers]
         if self.wireless.direction == "uplink":
             # Txs are UEs and rxs are APs
-            h = channel[:, ap_idx, ap_ant_idx, ue_idx, ue_ant_idx].reshape(channel.shape[0] * self.T, self.F)
+            h = channel[:, ap_idx, ap_ant_idx, ue_idx, ue_ant_idx].reshape(self.S * self.T, self.F)
         else:   # Downlink
             # Txs are APs and rxs are UEs
-            h = channel[:, ue_idx, ue_ant_idx, ap_idx, ap_ant_idx].reshape(channel.shape[0] * self.T, self.F)
+            h = channel[:, ue_idx, ue_ant_idx, ap_idx, ap_ant_idx].reshape(self.S * self.T, self.F)
 
         power = 10 * np.log10(np.abs(h) ** 2)
         phase = np.angle(h)
