@@ -26,7 +26,6 @@ class TransmissionBase(ABC):
         self.wireless = wireless
         self.ra_module = ra_module
         self.device = torch.device(device)
-        # TODO: set a default for device
 
     def __call__(self, channel: np.ndarray, tx_power: np.ndarray | float | None = None,
                  no: float | None = None, **kwargs) -> tuple:
@@ -43,16 +42,20 @@ class TransmissionCFR(TransmissionBase):
     -> LS channel estimation -> LMMSE equalization -> demap -> LDPC decode.
 
     :param wireless: WirelessParams, used for a default noise level if `no` isn't given.
+    :param ra_module: instance of ResourceAllocationBase containing instances of ResourceGrid and StreamManagement.
+    :param device: torch.device | str, indicating the device used for torch and Sionna computations.
     :param modulation: str, one of {"BPSK","QPSK","16QAM","64QAM","256QAM"}. Default "QPSK".
     :param coderate: float, LDPC code rate (k/n). Default 0.5. Must fall within the range
-        supported by Sionna's 5G LDPC encoder for the resulting `n` (roughly 1/5 to 0.95).        
+        supported by Sionna's 5G LDPC encoder for the resulting `n` (roughly 1/5 to 0.95).
     """
 
     _MOD_BITS = {"BPSK": 1, "QPSK": 2, "16QAM": 4, "64QAM": 6, "256QAM": 8}
-    # TODO: set the class to be able to be called with different num_bit_per_sym, avoid naming the modulation, and output the empirical SE
-
-    def __init__(self, wireless: params.WirelessParams, ra_module: ResourceAllocationBase, device: torch.device,
+    def __init__(self,
+                 wireless: params.WirelessParams,
+                 ra_module: ResourceAllocationBase,
+                 device: torch.device,
                  modulation: str = "QPSK", coderate: float = 0.5):
+        """Class constructor."""
         super().__init__(wireless, ra_module, device)
         try:
             self.num_bits_per_symbol = self._MOD_BITS[modulation.upper()]
@@ -79,8 +82,10 @@ class TransmissionCFR(TransmissionBase):
          :param tx_power: np.ndarray | float | None, per-UE transmit power (linear), shape
             (U, ) or scalar. Defaults to `self.wireless.ue_power`.
         :param no: float | None, noise power spectral density (linear). If None, defaults to `self.wireless.n0b_ap`.
-        :returns: tuple (h_hat, b, b_hat, x, x_hat) -- LS channel estimate, transmitted bits,
-            decoded bits, transmitted frequency-domain samples, decoded frequency-domain samples.
+
+        :returns: tuple (h_hat, b, b_hat, x, x_hat, no_eff) -- LS channel estimate, transmitted bits,
+            decoded bits, transmitted frequency-domain samples, decoded frequency-domain samples, and effective
+            noise power.
         """
         if tx_power is None:
             tx_power = self.wireless.ue_power
@@ -123,26 +128,27 @@ class TransmissionCFR(TransmissionBase):
 
 class SEuplinkOFDMpostMRC(TransmissionBase):
     """PHY-layer abstraction of an uplink OFDM transmission: computes the post-combining
-    SINR (and Shannon spectral efficiency) from LS channel estimation and MR (matched-filter)
-    combining, without any bit-level LDPC encoding/decoding or QAM mapping/demapping.
+    SINR and Shannon spectral efficiency using LS channel estimation and MR (matched-filter)
+    combining, without any encoding/decoding or mapping/demapping.
     Substantially cheaper than TransmissionCFR when only link-quality metrics are needed,
     in the spirit of Sionna SYS's PHY-abstraction functionality.
 
     :param wireless: WirelessParams, used for a default noise level if `no` isn't given.
+    :param ra_module: instance of ResourceAllocationBase containing instances of ResourceGrid and StreamManagement.
+    :param device: torch.device | str, indicating the device used for torch and Sionna computations.
+    :param compiled_core: bool, if True the main core is compiled with "reduce-overhead" argument in torch
+        if CUDA is available.
     """
-
-    def __init__(self, wireless: params.WirelessParams, ra_module: ResourceAllocationBase, device: torch.device,
+    def __init__(self,
+                 wireless: params.WirelessParams,
+                 ra_module: ResourceAllocationBase,
+                 device: torch.device,
                  compiled_core: bool = False):
         super().__init__(wireless, ra_module, device)
-        self.apply_channel = phy.channel.ApplyOFDMChannel()
-        self.rg_mapper = phy.ofdm.ResourceGridMapper(ra_module.rg)
-        self.ls_est = phy.ofdm.LSChannelEstimator(ra_module.rg, interpolation_type="nn")
-        self.mf_equ = phy.ofdm.MFEqualizer(ra_module.rg, ra_module.sm)
-
-        # Moving the blocks to the right device
-        for block in (self.rg_mapper, self.ls_est, self.mf_equ):
-            if isinstance(block, torch.nn.Module):
-                block.to(self.device)
+        self.apply_channel = phy.channel.ApplyOFDMChannel(device=str(self.device))
+        self.rg_mapper = phy.ofdm.ResourceGridMapper(ra_module.rg, device=str(self.device))
+        self.ls_est = phy.ofdm.LSChannelEstimator(ra_module.rg, interpolation_type="nn", device=str(self.device))
+        self.mf_equ = phy.ofdm.MFEqualizer(ra_module.rg, ra_module.sm, device=str(self.device))
 
         self._run_core = self._core
 
@@ -151,8 +157,17 @@ class SEuplinkOFDMpostMRC(TransmissionBase):
             compile_mode = "reduce-overhead" if self.device.type == "cuda" else "default"
             self._run_core = torch.compile(self._core, mode=compile_mode)
 
-    def _core(self, h: torch.Tensor, tx_power: torch.Tensor, no: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-        """All-tensor hot path -- this is the part that gets compiled in CUDA."""
+    def _core(self,
+              h: torch.Tensor,
+              tx_power: torch.Tensor,
+              no: torch.Tensor,
+              active_mask: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        """Main computation. This might be compiled in torch if compiled_core is True.
+
+        :param h: torch.Tensor, channel response, expecting shape (S, 1, L*M, U, 1, T, F) from __call__
+        :param tx_power: torch.Tensor, transmission power linear scale, expecting shape (U, ) or scalar from __call__
+        :param no: torch.Tensor, noise power linear scale, expecting scalar from __call__
+        """
         # Data REs left at zero -- LS estimation and no_eff depend only on pilots + the
         # channel/noise geometry, not on actual data content, so real symbols aren't needed.
         x_sym = torch.zeros((self.wireless.c.num_slots,
@@ -169,17 +184,29 @@ class SEuplinkOFDMpostMRC(TransmissionBase):
         y = self.apply_channel(x, h, no)
 
         h_hat, err_var = self.ls_est(y, no)
+
+        # Broadcast active_mask: Boolean tensor [S, U], on self.device
+        mask = active_mask[:, None, None, :, None, None, None]
+
+        h_hat = torch.where(mask, h_hat, 0.)
+        err_var = torch.where(mask, err_var, 0.)
+
         _, no_eff = self.mf_equ(y, h_hat, err_var, no)  # (S, U, 1, num_data_symbols)
 
         sinr = torch.squeeze(1.0 / no_eff, dim=-2)  # (S, U, num_data_symbols)
+        sinr = torch.where(active_mask[..., None], sinr, 0.)
 
         se = torch.mean(torch.log2(1.0 + sinr), dim=-1)  # (S, U)
 
         return sinr, se
 
     @torch.no_grad()
-    def __call__(self, channel: np.ndarray, tx_power: np.ndarray | float | None = None,
-                 no: float | None = None, **kwargs) -> tuple:
+    def __call__(self,
+                 channel: np.ndarray,
+                 tx_power: np.ndarray | float | None = None,
+                 no: float | None = None,
+                 active_mask: np.ndarray | None = None,
+                 **kwargs) -> tuple:
         """Estimate per-(slot, UE) SINR and spectral efficiency, skipping bit-level encoding.
 
         :param channel: complex CFR, shape (S, 1, L*M, U, 1, T, F) -- same convention as
@@ -199,28 +226,14 @@ class SEuplinkOFDMpostMRC(TransmissionBase):
         tx_power_t = torch.as_tensor(tx_power if tx_power is not None else self.wireless.ue_power,
                                      dtype=torch.float32, device=self.device)
         h = torch.as_tensor(channel, dtype=torch.complex64, device=self.device)
+        if active_mask is None:
+            active_mask = torch.ones((h.shape[0], h.shape[3]), dtype=torch.bool, device=self.device)
+        else:
+            active_mask = torch.as_tensor(active_mask, dtype=torch.bool, device=self.device)
 
         # Call the core method
-        sinr, se = self._run_core(h, tx_power_t, no_t)
+        sinr, se = self._run_core(h, tx_power_t, no_t, active_mask=active_mask)
         return sinr.cpu().numpy(), se.cpu().numpy()
-
-
-@dataclass(frozen=True)
-# TODO: To be merged with the general results as metrics
-class SisoTransmissionResult:
-    """Compact slot results; every vector has shape [S]. SINR is [S,T,F,1,1]."""
-
-    sinr: torch.Tensor
-    mcs_index: torch.Tensor
-    decoded_bits: torch.Tensor
-    harq_feedback: torch.Tensor
-    sinr_eff: torch.Tensor
-    tbler: torch.Tensor
-    bler: torch.Tensor
-
-    @property
-    def decoded(self) -> torch.Tensor:
-        return self.harq_feedback == 1
 
 
 class SisoPhyAbstraction(TransmissionBase):
@@ -231,6 +244,12 @@ class SisoPhyAbstraction(TransmissionBase):
     Residual estimation error is approximated as uncorrelated noise P_RE*MSE.
     This bypasses waveform decoding; SYS samples ACK/NACK from transport BLER.
     Reserved REs are masked to zero and excluded from transport-block sizing.
+
+    :param wireless: params.WirelessParams, Wireless parameters.
+    :param ra_module: instance of ResourceAllocationBase containing instances of ResourceGrid and StreamManagement.
+    :param device: torch.device | str [optional], Device for computation. Defaults to "cpu".
+    :param data_mask: torch.Tensor | None [optional], Data mask for resource grid. Defaults to None, meaning all
+            data symbols from the ResourceGrid are taken.
     """
 
     def __init__(self,
@@ -238,17 +257,7 @@ class SisoPhyAbstraction(TransmissionBase):
                  ra_module: ResourceAllocationBase,
                  device: torch.device | str = "cpu",
                  data_mask: torch.Tensor | None = None):
-        """
-        Initialize the SisoPhyAbstraction class.
-
-
-        :param wireless: params.WirelessParams, Wireless parameters.
-        :param ra_module: ResourceAllocationBase, Resource allocation module containing instances of ResourceGrid and
-            StreamManagement.
-        :param device: torch.device | str [optional], Device for computation. Defaults to "cpu".
-        :param data_mask: torch.Tensor | None [optional], Data mask for resource grid. Defaults to None, meaning all
-            data symbols from the ResourceGrid are taken.
-        """
+        """SisoPhyAbstraction class constructor."""
         super().__init__(wireless, ra_module, device)
 
         # Just to let it less verbose
@@ -350,5 +359,9 @@ class SisoPhyAbstraction(TransmissionBase):
         # Apply received SINR to phy_abstraction
         decoded_bits, harq, sinr_eff, tbler, bler = self.phy_abstraction(mcs_index, sinr=sinr_rx, **kwargs)
 
-        return (mcs_index.squeeze(-1), decoded_bits.squeeze(-1), harq.squeeze(-1),
-                sinr_eff.squeeze(-1), tbler.squeeze(-1), bler.squeeze(-1))
+        return tuple(
+            result.squeeze(-1)
+            for result in (
+                mcs_index, decoded_bits, harq, sinr_eff, tbler, bler,
+            )
+        )
