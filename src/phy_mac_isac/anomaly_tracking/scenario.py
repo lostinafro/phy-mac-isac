@@ -1,6 +1,7 @@
 """Allocation-driven SISO links using the common simulation environment."""
 import numpy as np
 import torch
+import matplotlib.pyplot as plt
 from shapely.geometry import MultiPolygon
 from sionna.phy.channel import GenerateOFDMChannel
 from sionna.phy.channel.tr38901 import PanelArray, UMi
@@ -288,6 +289,9 @@ class AnomalyTrackingScenario(SimulationEnvironment):
                             tbler=tbler,
                             bler=bler)
 
+        if self.debug:
+            self._debugging(channel=channel, )
+
         return self.metrics.decoded(self.frame), self.metrics.successful_ues(self.frame), bler
 
     def _omni_antenna(self, antenna_spacing: float):
@@ -302,6 +306,65 @@ class AnomalyTrackingScenario(SimulationEnvironment):
             carrier_frequency=self.wireless.carrier,
         )
 
+    def _debugging(self, every: int = 100, channel: np.ndarray | None = None):
+        every = max(1, self.c.num_frames // every)
+        if self.debug and (not (self.frame % every) or self.frame == self.c.num_frames - 1):
+            if self.frame == 0:
+                frame_range = np.array([-1, 0])
+            else:
+                frame_range = np.arange(self.frame - every, self.frame) + 1
+            # Visualize
+            try:
+                self.scene_fig = self.show_environment(fig=getattr(self, "scene_fig", None))
+                self.scene_fig.canvas.draw_idle()
+                plt.pause(0.001)
+            except Exception as e:
+                print(f"Scene fig. died in some way. Was it you?: {e}")
+
+            try:
+                self.channel_fig = self.plot_channel(channel, fig=getattr(self, "channel_fig", None))
+                self.channel_fig.canvas.draw_idle()
+                plt.pause(0.001)
+            except Exception as e:
+                print(f"Channel fig. died in some way. Was it you?: {e}")
+
+            # Print starts
+            print(f"----------------------- FRAME {self.frame:03d} -------------------------")
+
+            # UE movement
+            for u in range(min(10, self.U)):
+                msg1 = [f"{float(a):.2f}" for a in self.geo.ue_location[frame_range[0], u]]
+                msg2 = [f"{float(a):.2f}" for a in self.geo.ue_location[frame_range[-1], u]]
+                msg3 = [f"{float(a):.2f}" for a in self.geo.ue_velocity[frame_range[-1], u]]
+                print(f"UE {u}: old_pos={msg1}, new_pos={msg2}, new_vel={msg3}")
+
+            # Check current allocation
+            allocated = np.sort(env.metrics.allocation[self.frame])
+            allocated = allocated[allocated >= 0]
+            msg = ' '.join([f"{u:4d}" for u in allocated])
+            print(f"Allocated UEs are: {msg}")
+
+            print("\nCurrent:")
+            msg = [f"{int(s):4d}" for s in self.metrics.mcs_index[self.frame, allocated]]
+            print(f"UEs MCS index is: \t{' '.join(msg)}")
+            msg = [f"{int(s):4d}" for s in self.metrics.decoded_bits[self.frame, allocated]]
+            print(f"UEs decoded bit is: \t{' '.join(msg)}")
+            msg = [f"{int(q):4d}" for q in self.metrics.harq_feedback[self.frame, allocated]]
+            print(f"UEs HARQ feedback is: \t{' '.join(msg)}")
+            msg = [f"{float(10*np.log10(s)):4.1f}" for s in self.metrics.sinr_eff[self.frame, allocated]]
+            print(f"UEs SINR eff is: \t{' '.join(msg)}")
+            msg = [f"{float(b):4.3f}" for b in self.metrics.bler[self.frame, allocated]]
+            print(f"UEs BLER is: \t{' '.join(msg)}")
+
+            print("\nAvg.:")
+            msg = [f"{float(10*np.log10(s)):.1f}" for s in np.nanmean(self.metrics.sinr_eff[frame_range], axis=0)]
+            print(f"UEs avg SINR eff {frame_range[0]:02d}/{self.frame:02d} queue status is: \t{' '.join(msg)}")
+            msg = [f"{float(b):.1f}" for b in np.nanmean(self.metrics.bler[frame_range], axis=0)]
+            print(f"UEs avg BLER {frame_range[0]:02d}/{self.frame:02d} queue status is: \t{' '.join(msg)}")
+
+            print("----------------------- END FRAME -------------------------\n")
+
+        #breakpoint()
 
 def generate_environment(episode,
                          env_kwargs: dict | None = None,
@@ -367,7 +430,7 @@ if __name__ == "__main__":
     cluster_size = 4
     env_kwargs = {"num_ue": num_ue, "num_slots": num_slots, "num_frames": 10,
                   "num_clusters": num_clusters, "cluster_size": cluster_size,
-                  "perfect_csi": False}
+                  "perfect_csi": False, "debugging": True}
     env = generate_environment(1, env_kwargs=env_kwargs, device="cpu")
     for k in range(env.c.num_frames):
         num_silences = env.rng.integers(0, num_slots)

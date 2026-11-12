@@ -346,33 +346,40 @@ class SimulationEnvironment:
             `fig.show()`, `plt.show()`, or `fig.savefig(...)` on the result).
         """
         if fig is None:
-            fig, (ax_geo, ax_render) = plt.subplots(1, 2, figsize=figsize)
+            if self._load_scene:
+                fig, (ax_geo, ax_render) = plt.subplots(1, 2, figsize=figsize)
+            else:
+                fig, ax_geo = plt.subplots(1, figsize=figsize)
         else:
             fig.clf()  # wipe old axes/content
-            ax_geo, ax_render = fig.subplots(1, 2)  # rebuild the two panels in the same Figure
+            if self._load_scene:
+                ax_geo, ax_render = fig.subplots(1, 2)  # rebuild the two panels in the same Figure
+            else:
+                ax_geo = fig.subplots(1)
 
         # Left panel: top-down environment/region view, drawn directly into ax_geo
         self.geo.show(frame=self.frame, ax=ax_geo)
         ax_geo.set_title("Environment & regions (From above)")
 
         # Right panel: Mitsuba ray-traced rendering
-        if hasattr(self, 'scene') and self._load_scene:
-            camera = camera or self.default_camera
-            render_kwargs = dict(camera=camera, show_devices=show_nodes,
-                                 resolution=(1024, 1024), return_bitmap=True)
-            if paths is not None:
-                render_kwargs["paths"] = paths
+        if self._load_scene:
+            if self.scene is not None:
+                camera = camera or self.default_camera
+                render_kwargs = dict(camera=camera, show_devices=show_nodes,
+                                     resolution=(1024, 1024), return_bitmap=True)
+                if paths is not None:
+                    render_kwargs["paths"] = paths
 
-            # Render as bitmap
-            image = self.scene.render(**render_kwargs)
-            to_show = image.convert(component_format=mi.Struct.Type.UInt8, srgb_gamma=True)
-            ax_render.imshow(to_show)
-            ax_render.set_title("Ray-traced scene")
-            ax_render.axis("off")
-        else:
-            ax_render.text(0.5, 0.5, "No scene available for rendering.\nCall _setup_scene() first.",
-                           ha="center", va="center", transform=ax_render.transAxes)
-            ax_render.axis("off")
+                # Render as bitmap
+                image = self.scene.render(**render_kwargs)
+                to_show = image.convert(component_format=mi.Struct.Type.UInt8, srgb_gamma=True)
+                ax_render.imshow(to_show)
+                ax_render.set_title("Ray-traced scene")
+                ax_render.axis("off")
+            else:
+                ax_render.text(0.5, 0.5, "No scene available for rendering.\nCall _setup_scene() first.",
+                               ha="center", va="center", transform=ax_render.transAxes)
+                ax_render.axis("off")
         return fig
 
     def show_estimation(self,
@@ -420,7 +427,7 @@ class SimulationEnvironment:
         np.hstack([self.wireless.slot_index[s] + np.array([0, self.T - 1]) for s in [0, self.S - 1]])
         times_ms = self.wireless.times * 1e3    # [ms]
 
-        # Channel dimensions are: [L, M, U, S, T, F]
+        # Channel dimensions are: [L, M, U, S, T, F] TODO: to be fixed
         h = channel[ap_idx, ant_idx, ue_idx].reshape(self.S * self.T, self.F)
         power = 10 * np.log10(np.abs(h) ** 2)
         phase = np.angle(h)

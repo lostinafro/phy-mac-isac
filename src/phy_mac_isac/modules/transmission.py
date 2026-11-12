@@ -294,7 +294,7 @@ class SisoPhyAbstraction(TransmissionBase):
                  tx_power: np.ndarray | float | None = None,
                  no: float | None = None, *,
                  channel_estimate: torch.Tensor | None = None) -> tuple:
-        """Accept [S,1,1,1,1,T,F]; tx_power/no are linear powers per RE.
+        """Accept [S,1,1,1,1,T,F]; tx_power/no are linear powers.
 
         Both powers accept a scalar or an [S] vector. ``no`` is noise power
         over one subcarrier, not noise PSD or total bandwidth noise.
