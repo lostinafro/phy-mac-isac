@@ -347,6 +347,7 @@ def run_episode(episode: int,
     if device is None:
         device = "cpu"
 
+    from sionna.phy import config as sionna_config
     sionna_config.device = device
     device = torch.device(device)
 
