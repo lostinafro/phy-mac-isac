@@ -90,10 +90,17 @@ class WirelessParams(BaseWireless):
     lo_ppm: float | np.ndarray = PPM_XO
     ue_power: float | np.ndarray = UE_POW
     # Performance guarantees
-    queue_reliability: float = QUEUE_RELIABILITY
+    queue_reliability: float| np.ndarray = QUEUE_RELIABILITY
 
     # Guard time between frames [s]
     guard_time: float = 0.09
+
+
+    def __post_init__(self):
+        super().__post_init__()
+
+        if isinstance(self.queue_reliability, (float, int)):
+            self.queue_reliability = self.queue_reliability * np.ones(self.c.num_ue)
 
 
 @dataclass

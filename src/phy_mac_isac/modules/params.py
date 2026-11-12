@@ -164,17 +164,21 @@ class WirelessParams:
     # Available power at APs and UEs
     ue_power: float | np.ndarray = UE_POW
     ap_power: float | np.ndarray = AP_POW
+
+    # 3GPP parameters
+    direction: str = "uplink"
+    mcs_table_index: int = 1
+
     # Incoming traffic and queue sizes
     traffic_avg: float | np.ndarray = DATASIZE_AVG
     traffic_pdf: stats.rv_continuous = stats.expon
     queue_max: float | np.ndarray = QUEUE_MAX
-    # Performance guarantees
-    queue_reliability: float | np.ndarray = QUEUE_RELIABILITY
 
     # Guard time between frames [s].
     guard_time: float = 0.
 
     # Computed attributes (excluded from __init__)
+    # PHY
     cp_time: float = field(init=False)
     sym_time: float = field(init=False)
     slot_time: float = field(init=False)
@@ -186,15 +190,28 @@ class WirelessParams:
     slot_index: np.ndarray = field(init=False)
     freqs: np.ndarray = field(init=False)
     bw: float = field(init=False)
+    # Noise power
     nob_ap: float = field(init=False)
     nob_ue: float = field(init=False)
+    # Synchronization
     cfo_base: np.ndarray = field(init=False)
     cto_base: np.ndarray = field(init=False)
+    # 3GPP
+    mcs_category: int = field(init=False)
     # Generated data
     gen_bit: np.ndarray = field(init=False)
 
     def __post_init__(self):
         """Compute derived attributes after initialization."""
+        # Check input
+        if self.direction not in ("uplink", "downlink"):
+            raise ValueError("direction must be 'uplink' or 'downlink'")
+
+        tables = (1, 2) if self.direction == "uplink" else (1, 2, 3, 4)
+        if self.mcs_table_index not in tables:
+            raise ValueError("Invalid MCS table")
+        self.mcs_category = int(self.direction == "downlink")
+
         # Compute slot_time from numerology
         self.slot_time = 1e-3 / 2 ** self.numerology
 
@@ -243,8 +260,6 @@ class WirelessParams:
             self.traffic_avg = np.ones(self.c.num_ue) * self.traffic_avg
         if isinstance(self.queue_max, (float, int)):
             self.queue_max = self.queue_max * np.ones(self.c.num_ue, dtype=np.int32)
-        if isinstance(self.queue_reliability, (float, int)):
-            self.queue_reliability = self.queue_reliability * np.ones(self.c.num_ue)
 
         # Set initial data to full 0
         self.gen_bit = np.zeros((self.c.num_frames + 1, self.c.num_ue), dtype=np.int32)

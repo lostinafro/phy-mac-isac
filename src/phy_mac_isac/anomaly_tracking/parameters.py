@@ -1,7 +1,6 @@
 from copy import deepcopy
 import numpy as np
 from dataclasses import dataclass, field
-import math
 
 from .. import utils as ut
 from ..modules.params import SCENE_FOLDER, DATA_FOLDER, CACHE_FOLDER
@@ -108,8 +107,7 @@ class WirelessParams(BaseWireless):
     ue_power: float | np.ndarray = UE_POW
     guard_time: float = 0.      # Guard time between frames [s]
 
-    # Geometry-based TR 38.901 UMi channel and SYS abstraction settings.
-    direction: str = "uplink"
+    # Geometry-based TR 38.901 UMi channel settings
     mcs_table_index: int = 1
     bler_target: float = TARGET_BLER
     force_los: bool | None = None
@@ -117,25 +115,15 @@ class WirelessParams(BaseWireless):
     # Absolute complex-CFR coefficient MSE: E[abs(h_hat - h)**2].
     ce_error_variance: float = 0.0
 
-    # Computed attribute (excluded from __init__)
-    mcs_category: int = field(init=False)
-
     def __post_init__(self):
         super().__post_init__()
 
-        # Check input
-        if self.direction not in ("uplink", "downlink"):
-            raise ValueError("direction must be uplink or downlink")
-        tables = (1, 2) if self.direction == "uplink" else (1, 2, 3, 4)
-        if self.mcs_table_index not in tables or not 0 < self.bler_target < 1:
-            raise ValueError("Invalid MCS table or BLER target")
-        self.mcs_category = int(self.direction == "downlink")
         if not 0 < self.bler_target < 1:
             raise ValueError("bler_target must lie strictly between 0 and 1")
         if self.force_los is not None and not isinstance(self.force_los, bool):
             raise ValueError("force_los must be None or bool")
         variance = self.ce_error_variance
-        if not math.isfinite(variance) or variance < 0:
+        if not np.isfinite(variance) or variance < 0:
             raise ValueError("channel_estimation_error_variance must be finite and nonnegative")
 
 
