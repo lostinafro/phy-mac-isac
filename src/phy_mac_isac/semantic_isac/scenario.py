@@ -347,7 +347,6 @@ def run_episode(episode: int,
     if device is None:
         device = "cpu"
 
-    from sionna.phy import config as sionna_config
     sionna_config.device = device
     device = torch.device(device)
 
@@ -460,10 +459,8 @@ def common_parser():
 
     args = parser.parse_args()
     if not args.cpu and torch.cuda.is_available():
-        sionna_config.device = "cuda:0"
         device = "cuda:0"
     else:
-        sionna_config.device = "cpu"
         device = "cpu"
 
     return args.ra_method, args.parallel, args.savesubdir, args.quiet, args.overwrite, args.concurrent, device
