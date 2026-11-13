@@ -30,7 +30,7 @@ NUM_SLOTS = 20
 NUM_FRAMES = 100
 PPM_XO = 0.     # Perfect synchronization is assumed among nodes and AP
 UE_POW = ut.dbm2watt(0)
-TARGET_BLER = 0.05
+TARGET_BLER = 0.01
 
 
 # RayTracer and RadioMap parameters
