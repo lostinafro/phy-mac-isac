@@ -118,8 +118,21 @@ class AnomalyTrackingScenario(SimulationEnvironment):
 
         coords = np.vstack([clustered_coords, unclustered_coords])
 
-        # The following can be useful for visualization and to check which user is in which cluster
-        self.geo.update(semantic_regions=MultiPolygon(cells))
+        # The is used for visualization and to check which user is in which cluster
+        # The for loop is just to be sure that each element inside parts is a Polygon
+        parts = []
+        for i, cell in enumerate(cells):
+            if cell.is_empty:
+                continue
+
+            if cell.geom_type == "Polygon":
+                parts.append(cell)
+            elif cell.geom_type == "MultiPolygon":
+                parts.extend(cell.geoms)
+            else:
+                raise ValueError(f"Unexpected geometry for cell {i}: {cell.geom_type}")
+
+        self.geo.update(semantic_regions=MultiPolygon(parts))
 
         return np.hstack((coords, height))
 
