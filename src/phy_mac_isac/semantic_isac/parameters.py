@@ -1,11 +1,10 @@
-import os
 from copy import deepcopy
 from pathlib import Path
 import numpy as np
 from dataclasses import dataclass, field
 
 from .. import utils as ut
-from ..modules.params import SCENE_FOLDER, DATA_FOLDER, CACHE_FOLDER, _directory_from_env
+from ..modules.params import SCENE_FOLDER, DATA_FOLDER, CACHE_FOLDER
 from ..modules.params import SharedParams as BaseShared
 from ..modules.params import WirelessParams as BaseWireless
 from ..modules.params import Metrics as BaseMetrics
@@ -19,7 +18,6 @@ NUM_UE = 12
 VEL_MAG = 5.                 # [m/s]
 VEL_STD = 10.                 # [m/s]
 NUM_REGIONS = 16
-UE_HEIGHT = 1.5             # [m]
 
 # Wireless
 CARRIER = 3e9       # [Hz]
@@ -33,7 +31,7 @@ QUEUE_RELIABILITY = 0.95         # 1 - epsilon in the paper
 UE_POW = ut.dbm2watt(-10)
 
 # DEFAULT FOLDERS
-RM_FOLDER = _directory_from_env("PHY_MAC_ISAC_RM_DIR", Path(CACHE_FOLDER) / "semantic_isac" / "rm")
+RM_FOLDER = ut.directory_from_env("PHY_MAC_ISAC_RM_DIR", Path(CACHE_FOLDER) / "semantic_isac" / "rm")
 
 # RayTracer and RadioMap parameters
 RT_PARAM = {
@@ -92,18 +90,39 @@ class WirelessParams(BaseWireless):
     lo_ppm: float | np.ndarray = PPM_XO
     ue_power: float | np.ndarray = UE_POW
     # Performance guarantees
-    queue_reliability: float = QUEUE_RELIABILITY
+    queue_reliability: float| np.ndarray = QUEUE_RELIABILITY
 
     # Guard time between frames [s]
     guard_time: float = 0.09
 
 
+    def __post_init__(self):
+        super().__post_init__()
+
+        if isinstance(self.queue_reliability, (float, int)):
+            self.queue_reliability = self.queue_reliability * np.ones(self.c.num_ue)
+
+
 @dataclass
 class Metrics(BaseMetrics):
     """Collect relevant metrics for semantic isac simulations.
-     All metric variables are saved, from frame = 0 to frame = self.c.num_frames - 1.
-     If frame = self.c.num_frames (indexed also with [-1]), the element is the initialization variable.
+    All metric variables are saved, from frame = 0 to frame = self.c.num_frames - 1.
+    If frame = self.c.num_frames (indexed also with [-1]), the element is the initialization variable.
+
+    :ivar delta_queue: Remaining capacity in each user's queue (obtained as `max_queue - queue`)
+    :ivar misclassification: Indicator of an incorrect semantic-region classification.
+    :ivar risk_predicted: Predicted semantic risk for the selected allocation decision.
+    :ivar risk_predicted_full: Predicted semantic risk for each available allocation decision.
+    :ivar risk_hat: Semantic risk evaluated using the simulated ground truth.
     """
+    # Communication parameters
+    delta_queue: np.ndarray = field(init=False)
+    # Semantic parameters
+    misclassification: np.ndarray = field(init=False)
+    risk_predicted: np.ndarray = field(init=False)
+    risk_predicted_full: np.ndarray = field(init=False)
+    risk_hat: np.ndarray = field(init=False)
+
     def __post_init__(self):
         self.ue_slot_map = np.zeros((self.c.num_frames + 1, self.c.num_slots, self.c.num_ue), dtype=bool)
         self.large_scale = np.zeros((self.c.num_frames + 1, self.c.num_ap, self.c.num_ue, ))

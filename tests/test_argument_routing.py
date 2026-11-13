@@ -71,6 +71,7 @@ def runner_fixture(relative_path):
                  if isinstance(node, ast.FunctionDef) and node.name == "run_episode")
     namespace = {
         "ut": helpers,
+        "sionna_config": SimpleNamespace(device="cpu"),
         "params": SimpleNamespace(DATA_FOLDER="default", SharedParams=Shared,
                                   WirelessParams=Wireless),
         "SimulationEnvironment": Environment,

@@ -1,0 +1,477 @@
+"""Allocation-driven SISO links using the common simulation environment."""
+import numpy as np
+import torch
+import matplotlib.pyplot as plt
+from shapely.geometry import MultiPolygon
+from scipy.stats import ecdf
+
+from sionna.phy.channel import GenerateOFDMChannel
+from sionna.phy.channel.tr38901 import PanelArray, UMi
+from sionna.phy import config as sionna_config
+from phy_mac_isac.anomaly_tracking.allocation import TDDResourceAllocation
+from .. import utils as ut
+from ..modules.environment import SimulationEnvironment
+from ..modules.transmission import SisoPhyAbstraction
+from . import parameters as anomaly_params
+
+
+class AnomalyTrackingScenario(SimulationEnvironment):
+    """Generate UE geometry through the base environment, without ray tracing.
+
+    Call setup_scenario(), then setup_modules(), then step(allocation).
+    UEs are stationary by default; explicit mobility and restored trajectories
+    use the base environment's geometry update. One occupied slot is one batch
+    example with a single UE/AP antenna and a single transport block.
+    """
+
+    shared_type = anomaly_params.SharedParams
+    wireless_type = anomaly_params.WirelessParams
+    metrics_type = anomaly_params.Metrics
+
+    def __init__(self, *args, perfect_csi: bool = True, **kwargs):
+        if kwargs.get("load_scene", False) or kwargs.get("scene_name") is not None:
+            raise ValueError("AnomalyTrackingScenario uses load_scene=False and no RT scene")
+        kwargs["load_scene"] = False
+        super().__init__(*args, **kwargs)
+
+        # Internal Attribute
+        self.channel_model = None
+        self.channel_generator = None
+        self._topology_batch_size = None
+        self._perfect_csi = perfect_csi
+
+    def _build_base_scene(self,
+                          scene_name: str | None,
+                          area_coordinates: list | np.ndarray | None = None,
+                          default_room_side: float = anomaly_params.ROOM_SIDE,
+                          ) -> tuple[None, list | np.ndarray, str | None]:
+        """Build the base propagation scene with the new default room side."""
+        return super()._build_base_scene(scene_name, area_coordinates, default_room_side)
+
+    def ue_random_positioning(self,
+                              height: float | np.ndarray,
+                              min_dist: np.ndarray = 10 * np.ones(2),
+                              margin: float = 0.99,
+                              exclusion_centers: np.ndarray | None = None,
+                              exclusion_radius: float | np.ndarray = 10.):
+        """First generate the cluster center randomly. Then, place the UEs around them randomly.
+        Finally, place the unclustered UEs randomly throughout the whole environment.
+        """
+        # Check if height is scalar and convert to array if necessary
+        if np.isscalar(height):
+            height = height * np.ones((self.U, 1))
+
+        # Sample the center first
+        cluster_centroids, cells = ut.random_2d_positioning(
+            self.geo.environment_shape,
+            n=self.c.num_clusters,
+            min_dist=min_dist,
+            margin=margin,
+            exclusion_centers=exclusion_centers,
+            exclusion_radius=exclusion_radius,
+            rng=self.rng
+        )
+
+        # Now sample the device of each cluster
+        coords = []
+        for (centroid, cell) in zip(cluster_centroids, cells):
+            coords.append(
+                ut.random_2d_positioning(
+                    cell,
+                    n=self.c.cluster_size,
+                    min_dist=np.ones(2),
+                    margin=1.,
+                    exclusion_centers=exclusion_centers,
+                    exclusion_radius=exclusion_radius,
+                    rng=self.rng
+                )[0]
+            )
+
+        clustered_coords = np.vstack(coords)
+
+        # Check how many UE are left
+        unclustered_ues = self.c.num_ue - clustered_coords.shape[0]
+        if unclustered_ues:
+            if exclusion_centers is not None:
+                # Merge previous generated positions in the exclusion areas
+                exclusion_centers = np.vstack([
+                    np.hstack([clustered_coords, height[:-unclustered_ues]]),
+                    exclusion_centers,
+                ])
+                exclusion_radii = np.concatenate([np.ones(clustered_coords.shape[0]), exclusion_radius])
+            else:
+                exclusion_centers = np.hstack([clustered_coords, height[:-unclustered_ues]])
+                exclusion_radii = np.ones(clustered_coords.shape[0])
+
+            # Now sample the unclustered device randomly
+            unclustered_coords = ut.random_2d_positioning(
+                self.geo.environment_shape,
+                n=unclustered_ues,
+                min_dist=np.ones(2),
+                margin=margin,
+                exclusion_centers=exclusion_centers,
+                exclusion_radius=exclusion_radii,
+                rng=self.rng
+            )[0]
+        else:
+            unclustered_coords = np.empty((0, 2))
+
+        coords = np.vstack([clustered_coords, unclustered_coords])
+
+        # The following can be useful for visualization and to check which user is in which cluster
+        self.geo.update(semantic_regions=MultiPolygon(cells))
+
+        return np.hstack((coords, height))
+
+    def setup_scenario(self,
+                       ap_pos: float | np.ndarray | None = None,
+                       antenna_spacing: float | None = None,
+                       init_ue_pos: float | np.ndarray = anomaly_params.UE_HEIGHT,
+                       ue_vel_mean: np.ndarray | float= 0.,
+                       ue_vel_cov: np.ndarray | float = 0.,
+                       ue_ap_min_distance: float = 10.,
+                       ap_orientation: str | np.ndarray = "fixed"):
+        """Generate or restore base geometry; default AP height is 10 m (UMi)."""
+        super().setup_scenario(
+            ap_pos=np.array([[0., 0., 10.0]]) if ap_pos is None else ap_pos,
+            antenna_spacing=antenna_spacing,
+            init_ue_pos=init_ue_pos,
+            ue_vel_mean=ue_vel_mean,
+            ue_vel_cov=ue_vel_cov,
+            ue_ap_min_distance=ue_ap_min_distance,
+            ap_orientation=ap_orientation)
+
+    def setup_modules(self,
+                      ra_module = None,
+                      transmission_module = None,
+                      tracker_module = None,
+                      performance = None,
+                      device: torch.device | str = "cpu"):
+        """Wire the shared module slots and create a geometry-based UMi channel.
+
+        Allocation is supplied externally, so no allocator/tracker is required.
+        Optional injected modules are retained using the base setup_modules API.
+        """
+        # Put default modules
+        if ra_module is None:
+            ra_module = TDDResourceAllocation(self.c, self.wireless)
+        if transmission_module is None:
+            transmission_module = SisoPhyAbstraction(self.wireless, ra_module, device=device)
+
+        super().setup_modules(ra_module, transmission_module, tracker_module, performance)
+
+        self.channel_model = UMi(
+            carrier_frequency=self.wireless.carrier, o2i_model="low",
+            ut_array=self._omni_antenna(self.geo.antenna_spacing),
+            bs_array=self._omni_antenna(self.geo.antenna_spacing),
+            direction=self.wireless.direction,
+            enable_pathloss=True,
+            enable_shadow_fading=self.wireless.enable_shadow_fading,
+        )
+
+        self.channel_generator = GenerateOFDMChannel(
+            self.channel_model,
+            self.ra_module.rg,
+            normalize_channel=False
+        )
+
+        if not self._perfect_csi:
+            self.set_ls_estimation_error()
+
+    def _set_channel_topology(self, ue_ids):
+        """One actual AP/UE pair per occupied slot, from the current frame."""
+        slots = ue_ids.size
+        # Sionna 2.x system-level model buffers need resetting when the occupied-slot batch size changes between frames.
+        if self._topology_batch_size != slots:
+            self.channel_model.reset_topology()
+        self._topology_batch_size = slots
+        def tensor(value):
+            return torch.as_tensor(np.array(value, copy=True), dtype=torch.float32)
+
+        # The important thing here is that the UE location and velocity is assumed per batch (1 UE per batch)
+        ut_loc = tensor(self.geo.ue_location[self.frame, ue_ids])[:, None, :]
+        bs_loc = tensor(np.broadcast_to(self.geo.ap_location[0], (slots, 1, 3)))
+        velocity = tensor(self.geo.ue_velocity[self.frame, ue_ids])[:, None, :]
+        # Fixed vertically polarized omnidirectional elements.
+        self.channel_model.set_topology(
+            ut_loc=ut_loc,
+            bs_loc=bs_loc,
+            ut_orientations=torch.zeros_like(ut_loc),   # It is fine for iso antennas
+            bs_orientations=torch.zeros_like(bs_loc),   # It is fine for iso antennas
+            ut_velocities=velocity,
+            in_state=torch.zeros((slots, 1), dtype=torch.bool),
+            los=self.wireless.force_los
+        )
+
+    def set_ls_estimation_error(self):
+        """Compute the variance of the least-square channel estimation assuming no pilot contamination"""
+        variance = np.mean(self.wireless.nob_ap /  self.wireless.ue_power / len(self.ra_module.pilot_ofdm_symbol_indices()))
+        self.wireless.update(ce_error_variance=variance)
+
+    def _estimate_channel(self, channel):
+        """Add independent circular complex Gaussian estimation error.
+
+        Variance is absolute E[abs(error)**2] per CFR coefficient, after path
+        loss, and defaults to zero. Zero variance consumes no random samples.
+        """
+        variance = self.wireless.ce_error_variance
+        if not np.isfinite(variance) or variance < 0:
+            raise ValueError("channel_estimation_error_variance must be finite and nonnegative")
+        if variance == 0 or channel.numel() == 0:
+            return channel.clone()
+        error = (self.rng.standard_normal(tuple(channel.shape)) + 1j * self.rng.standard_normal(tuple(channel.shape))) * np.sqrt(variance / 2)
+        return channel + torch.as_tensor(error, dtype=channel.dtype)
+
+    @torch.no_grad()
+    def step(self, allocation: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """Advance geometry, then decode one transport block per occupied slot.
+
+        Allocation contains ordered zero-based UE IDs (-1 = idle), up to the
+        configured frame's slot count. Collisions must be resolved by the MAC.
+        """
+        # Check module readiness
+        if not self._modules_ready:
+            raise RuntimeError("Call setup_scenario() and setup_modules() before step()")
+
+        # Check frames
+        if self.frame + 1 >= self.K:
+            raise RuntimeError("All configured frames have already been simulated")
+
+        # Check allocation vector
+        allocation = np.asarray(allocation)
+        if allocation.ndim != 1 or allocation.shape[0] != self.S or not np.issubdtype(allocation.dtype, np.integer):
+            raise ValueError("allocation must be a 1D sequence of integer UE IDs of len(self.num_slots)")
+        if np.any((allocation < -2) | (allocation >= self.U)):
+            raise ValueError("UE IDs must lie in [0,num_ue); use -1 for idle; -2 for collision")
+
+        # Start allocation toward channel generation
+        slot_indices = np.flatnonzero(allocation >= 0)
+        ue_idx = allocation[slot_indices]
+        # Check allocation is unique (considered system constraint)
+        if np.any(np.unique_counts(ue_idx)[1] > 1):
+            raise ValueError("UE IDs must be unique (UEs cannot be allocated to multiple slots)")
+
+        # Frame starts now (The first value of frame is -1, i.e., the initialization frame.)
+        self.frame += 1
+        self.move_ue()      # By default, movement is not considered
+
+        ## Generate channel
+        # Channel shape desired
+        shape = (ue_idx.size, 1, 1, 1, 1, self.T, self.F)
+        if ue_idx.size:
+            self._set_channel_topology(ue_idx)
+            channel = self.channel_generator(batch_size=ue_idx.size)
+            if tuple(channel.shape) != shape:
+                raise ValueError(f"Channel generator returned {tuple(channel.shape)}, expected {shape}")
+        else:
+            # If only silent or collision slot, return empty. The collisions cannot be stored because the BS does not
+            # know the UE IDs
+            return self.metrics.decoded(self.frame), self.metrics.successful_ues(self.frame), np.empty((0,))
+
+        # Compute channel estimation
+        channel_estimate = self._estimate_channel(channel)
+
+        # Get transmitted and noise power
+        if self.wireless.direction == "uplink":
+            power = np.asarray(self.wireless.ue_power)[ue_idx]
+            noise = self.wireless.nob_ap
+        else:
+            power = np.full(ue_idx.size, np.asarray(self.wireless.ap_power)[0])
+            noise = self.wireless.nob_ue
+
+        # Simulate transmission through PhyAbstraction
+        mcs_index, decoded_bits, harq_feedback, sinr_eff, tbler, bler  = self.transmission_module(channel, power, noise, channel_estimate=channel_estimate)
+
+        self.metrics.update(self.frame, ue_idx,
+                            allocation=allocation,
+                            mcs_index=mcs_index,
+                            decoded_bits=decoded_bits,
+                            harq_feedback=harq_feedback,
+                            sinr_eff=sinr_eff,
+                            tbler=tbler,
+                            bler=bler)
+
+        if self.debug:
+            self._debugging(channel=channel)
+
+        return self.metrics.decoded(self.frame), self.metrics.successful_ues(self.frame), bler
+
+    def _omni_antenna(self, antenna_spacing: float):
+        return PanelArray(
+            num_rows_per_panel=self.M_v,
+            num_cols_per_panel=self.M_h,
+            polarization="single",
+            polarization_type="V",
+            element_vertical_spacing=antenna_spacing,
+            element_horizontal_spacing=antenna_spacing,
+            antenna_pattern="omni",
+            carrier_frequency=self.wireless.carrier,
+        )
+
+    def _debugging(self, every: int = 100, channel: np.ndarray | None = None):
+        every = max(1, self.c.num_frames // every)
+        if self.debug and (not (self.frame % every) or self.frame == self.c.num_frames - 1):
+            # Check current allocation
+            allocated = np.sort(env.metrics.allocation[self.frame])
+
+            if self.frame == 0:
+                frame_range = np.array([-1, 0])
+            else:
+                frame_range = np.arange(self.frame - every, self.frame) + 1
+            # Visualize
+            try:
+                self.scene_fig = self.show_environment(fig=getattr(self, "scene_fig", None))
+                self.scene_fig.canvas.draw_idle()
+                plt.pause(0.001)
+            except Exception as e:
+                print(f"Scene fig. died in some way. Was it you?: {e}")
+
+            try:
+                # Create zero array of standard dimensions to be filled with values
+                # [num_active_slots, num_rx, num_rx_ant, num_tx, num_tx_antennas, num_ofdm_symbols, num_subcarriers]
+                h = np.zeros((self.S, self.L, self.M, 1, 1, self.T, self.F), dtype=np.complex128)
+                h[allocated > 0] = channel
+                self.channel_fig = self.plot_channel(h, fig=getattr(self, "channel_fig", None))
+                self.channel_fig.canvas.draw_idle()
+                plt.pause(0.001)
+            except Exception as e:
+                print(f"Channel fig. died in some way. Was it you?: {e}")
+
+            # Print starts
+            print(f"----------------------- FRAME {self.frame:03d} -------------------------")
+
+            # UE movement
+            for u in range(min(10, self.U)):
+                msg1 = [f"{float(a):.2f}" for a in self.geo.ue_location[frame_range[0], u]]
+                msg2 = [f"{float(a):.2f}" for a in self.geo.ue_location[frame_range[-1], u]]
+                msg3 = [f"{float(a):.2f}" for a in self.geo.ue_velocity[frame_range[-1], u]]
+                print(f"UE {u}: old_pos={msg1}, new_pos={msg2}, new_vel={msg3}")
+
+            # Print allocation
+            allocated = allocated[allocated >= 0]
+            msg = ' '.join([f"{u:4d}" for u in allocated])
+            print(f"Allocated UEs are: {msg}")
+
+            print("\nCurrent:")
+            msg = [f"{int(s):4d}" for s in self.metrics.mcs_index[self.frame, allocated]]
+            print(f"UEs MCS index is: \t{' '.join(msg)}")
+            msg = [f"{int(s):4d}" for s in self.metrics.decoded_bits[self.frame, allocated]]
+            print(f"UEs decoded bit is: \t{' '.join(msg)}")
+            msg = [f"{int(q):4d}" for q in self.metrics.harq_feedback[self.frame, allocated]]
+            print(f"UEs HARQ feedback is: \t{' '.join(msg)}")
+            msg = [f"{float(10*np.log10(s)):4.1f}" for s in self.metrics.sinr_eff[self.frame, allocated]]
+            print(f"UEs SINR eff is: \t{' '.join(msg)}")
+            msg = [f"{float(b):4.3f}" for b in self.metrics.bler[self.frame, allocated]]
+            print(f"UEs BLER is: \t{' '.join(msg)}")
+
+            print("\nAvg.:")
+            msg = [f"{float(10*np.log10(s)):.1f}" for s in np.nanmean(self.metrics.sinr_eff[frame_range], axis=0)]
+            print(f"UEs avg SINR {frame_range[0]:02d}/{self.frame:02d} is: \t{' '.join(msg)}")
+            msg = [f"{float(b):.2f}" for b in np.nanmean(self.metrics.bler[frame_range], axis=0)]
+            print(f"UEs avg BLER {frame_range[0]:02d}/{self.frame:02d} is: \t{' '.join(msg)}")
+
+            print("----------------------- END FRAME -------------------------\n")
+
+        #breakpoint()
+
+def generate_environment(episode,
+                         env_kwargs: dict | None = None,
+                         device: str | torch.device | None = None) -> AnomalyTrackingScenario:
+    """Run an external allocation sequence through the shared environment lifecycle.
+
+    ``allocations`` yields one vector per frame. No MAC decisions or semantic
+    tracking metrics are fabricated here. Save the returned StepResults in the
+    caller, together with env.c/wireless/geo when managing a scenario directly.
+    """
+    ### Set up machine variables
+    device = torch.device("cpu" if device is None else device)
+
+    if device.type == "cuda":
+        if not torch.cuda.is_available():
+            raise RuntimeError(f"CUDA was requested ({device}), but CUDA is unavailable")
+
+        # Take cuda device index for Sionna
+        index = device.index if device.index is not None else torch.cuda.current_device()
+        if not 0 <= index < torch.cuda.device_count():
+            raise ValueError(f"CUDA device index {index} is out of range")
+
+        # Reset device just to be sure it is consistent
+        device = torch.device("cuda", index)
+
+    # Set all
+    sionna_config.device = str(device)
+    torch.set_default_device(device)
+
+    # Take the kwargs
+    env_kwargs = env_kwargs or {}
+
+    # Validate the complete argument dictionary before routing it to each stage.
+    ut.validate_kwargs(
+        env_kwargs,
+        AnomalyTrackingScenario.shared_type,
+        AnomalyTrackingScenario.wireless_type,
+        SimulationEnvironment,
+        AnomalyTrackingScenario,
+        AnomalyTrackingScenario.setup_scenario,
+        exclude={"self", "episode", "shared_params", "wireless_params", "c"},
+        name="env_kwargs"
+    )
+    # --- Build environment ---
+    sha_kwargs = ut.filter_call_kwargs(AnomalyTrackingScenario.shared_type, **env_kwargs)
+    wir_kwargs = ut.filter_call_kwargs(AnomalyTrackingScenario.wireless_type, **env_kwargs)
+    ini_kwargs = ut.filter_call_kwargs(SimulationEnvironment, **env_kwargs)
+    ini_kwargs.update(ut.filter_call_kwargs(AnomalyTrackingScenario, **env_kwargs))
+    env = AnomalyTrackingScenario(episode, sha_kwargs, wir_kwargs, **ini_kwargs)
+    # Setup scenario
+    env.setup_scenario(**ut.filter_call_kwargs(env.setup_scenario, **env_kwargs))
+    # Setup default modules
+    env.setup_modules(device=device)
+
+    return env
+
+
+if __name__ == "__main__":
+    results = []
+    num_ue = 50
+    num_slots = 10
+    num_clusters = 10
+    cluster_size = 4
+    env_kwargs = {"num_ue": num_ue, "num_slots": num_slots, "num_frames": 10000,
+                  "num_clusters": num_clusters, "cluster_size": cluster_size,
+                  "perfect_csi": False, "debugging": True}
+    env = generate_environment(1, env_kwargs=env_kwargs, device="cpu")
+    for k in range(env.c.num_frames):
+        num_silences = env.rng.integers(0, num_slots)
+        num_collisions = env.rng.integers(0, num_slots - num_silences)
+        allocation = np.full(num_slots, -1)
+        allocation[:num_slots - num_silences - num_collisions] = env.rng.choice(num_ue, size=num_slots - num_silences - num_collisions, replace=False)
+        if num_collisions > 0:
+            allocation[-num_collisions:] = -2
+        allocation = env.rng.permutation(allocation)
+        results.append(env.step(allocation))
+
+    # Plot CDF of results
+    # Set LaTeX as the default text interpreter
+    plt.rcParams['text.usetex'] = True
+    plt.rcParams['font.family'] = 'serif'
+    plt.rcParams['font.serif'] = ['Computer Modern Roman']  # LaTeX default font
+
+    metrics = [env.metrics.bler, 10 * np.log10(env.metrics.sinr_eff), env.metrics.mcs_index]
+    metrics_label = ["bler", "sinr_eff", "mcs_index"]
+    fig, ax = plt.subplots(ncols=len(metrics), figsize=(15, 5))
+
+    for i, metric in enumerate(metrics):
+        samples = metric[:-1].flatten()[~np.isnan(metric[:-1].flatten())]
+        mean = np.mean(samples)
+        perc_90 = np.percentile(samples, 90)
+        ecdf_res = ecdf(samples)
+        ecdf_res.cdf.plot(ax=ax[i])
+        ax[i].set_title(f"{metrics_label[i]}")
+        ax[i].grid(True)
+        ax[i].set_ylim(0, 1.01)
+        ax[i].axvline(x=mean, color='r', linestyle='--', label=f"Avg.: {mean:.3f}")
+        ax[i].axvline(x=perc_90, color='g', linestyle='--', label=f"90th perc: {perc_90:.3f}")
+        ax[i].legend()
+    fig.suptitle("CDF of Metrics")
+    fig.tight_layout()
+    fig.show()

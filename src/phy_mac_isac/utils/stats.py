@@ -11,7 +11,8 @@ def qfun(input):
 def sample_multivariate_gaussian(cov: np.ndarray, mean: np.ndarray | None = None,
                                  rng: np.random.Generator = np.random.default_rng()) -> np.ndarray:
     r"""Sample collection of multivariate Gaussian distribution from the covariance matrices in a vectorized version
-    It uses Cholesky and explicit multiplication to avoid loops, but it needs a positive definitive covariances.
+    Uses Cholesky for positive definite covariances and an eigenvalue square
+    root for positive semidefinite covariances (including stationary UEs).
 
     :param cov: np.ndarray, (A, d, d) covariance matrix where A is the number of covariances matrix and d is the
         dimensionality of the random variable.
@@ -21,11 +22,24 @@ def sample_multivariate_gaussian(cov: np.ndarray, mean: np.ndarray | None = None
     """
     if mean is None:
         mean = np.zeros((cov.shape[0], cov.shape[1]))
+    if np.all(cov <= 1e-12):
+        return mean
+
     # Precompute Cholesky decompositions: shape (A, d, d)
-    trian = np.linalg.cholesky(cov)  # Upper triangular Cholesky factors
+    try:
+        # For positive definite covariance matrix
+        trian = np.linalg.cholesky(cov)
+    except np.linalg.LinAlgError:
+        # For positive semi-definitive covariance matrix
+        eigenvalues, eigenvectors = np.linalg.eigh(cov)
+        tolerance = (100 * np.finfo(eigenvalues.dtype).eps
+                     * np.max(np.abs(eigenvalues), axis=-1, keepdims=True))
+        if np.any(eigenvalues < -tolerance):
+            raise np.linalg.LinAlgError("Covariance must be positive semidefinite")
+        trian = eigenvectors * np.sqrt(np.maximum(eigenvalues, 0))[:, None, :]
     # Generate standard normal samples: shape (A, 1, d)
     standard_samples = rng.standard_normal((cov.shape[0], 1, cov.shape[-1]))
-    # Apply Cholesky to obtain X = μ + L @ Z, where Z ~ N(0, I)
+    # Apply Triangular to obtain X = μ + L @ Z, where Z ~ N(0, I)
     return mean + np.squeeze(np.einsum('nij,nmj->nmi', trian, standard_samples), axis=1)
 
 

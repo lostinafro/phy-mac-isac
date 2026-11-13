@@ -1,14 +1,14 @@
 import os
+import warnings
 import numpy as np
 import torch
 import mitsuba as mi
-from scipy.spatial.transform import Rotation
 from matplotlib import pyplot as plt
 import shapely as sha
 import sionna.rt as rt
 import sionna.phy as phy
 
-from . import resource_allocation as ra
+from .resource_allocation import ResourceAllocationBase, available_methods, RoundRobinAllocation
 from .transmission import TransmissionBase
 from .trackers import TrackerBase
 from .theory import PerformanceBase
@@ -155,39 +155,49 @@ class SimulationEnvironment:
 
         # RadioMap and RayTracer (only if scene is loaded)
         if self._load_scene:
-            self.rm: rt.RadioMap = None             # Instance of a RadioMap. Set in _setup_scene()
+            self.rm: rt.RadioMap | None = None             # Instance of a RadioMap. Set in _setup_scene()
             self.rm_solver = rt.RadioMapSolver()    # Solver module for RadioMap computation
             self.path_solver = rt.PathSolver()      # Solver module for path evaluation in the ray tracer
 
         # Resource allocation, transmission and tracker modules
-        self.ra_method: type[ra.ResourceAllocationBase] = None    # Resource allocation module, giving the allocation on a frame
-        self.transmission_module: type[TransmissionBase] = None   # Transmission module, simulating wireless signal processing
-        self.tracker_module: type[TrackerBase] = None             # Tracker module, needed for location tracking
+        self.ra_module: ResourceAllocationBase | None = None    # Resource allocation module, giving the allocation on a frame
+        self.transmission_module: TransmissionBase | None = None   # Transmission module, simulating wireless signal processing
+        self.tracker_module: TrackerBase | None = None             # Tracker module, needed for location tracking
 
         # Theoretical evaluation modules
-        self.performance: type[PerformanceBase] = None   # Module for theoretic performance evaluation
+        self.performance: PerformanceBase | None = None   # Module for theoretic performance evaluation
 
         # Set up the environment at frame -1 (last element for the dataclasses attributes)
         self.frame = -1             # Denote the current number of the frame
         self.frame_sync = 0         # Denote the last frame in which PRACH synchronization was performed
 
+        # Set internal variable for checking
+        self._scenario_ready = False
+        self._modules_ready = False
+
     def setup_modules(self,
-                      ra_algorithm: type[ra.ResourceAllocationBase],
-                      transmission_module: type[TransmissionBase],
-                      tracker_module: type[TrackerBase],
-                      performance: type[PerformanceBase]):
+                      ra_module: ResourceAllocationBase | None,
+                      transmission_module: TransmissionBase | None,
+                      tracker_module: TrackerBase | None,
+                      performance: PerformanceBase | None):
         """Set scheduling, transmission, tracking, and evaluation modules to be used."""
-        self.ra_method = ra_algorithm
+        if not self._scenario_ready:
+            raise RuntimeError("Call setup_scenario() before setup_modules()")
+
+        self.ra_module = ra_module
         self.transmission_module = transmission_module
         self.tracker_module = tracker_module
         self.performance = performance
+        self._modules_ready = True
 
     def setup_scenario(self,
                        ap_pos: float | np.ndarray | None = None,
                        antenna_spacing: float | None = None,
-                       init_ue_pos: np.ndarray | None = None,
+                       init_ue_pos: float | np.ndarray = params.UE_HEIGHT,
                        ue_vel_mean: np.ndarray | float = 0.,
-                       ue_vel_cov: np.ndarray | float = params.VEL_STD):
+                       ue_vel_cov: np.ndarray | float = params.VEL_STD,
+                       ue_ap_min_distance: float = 0.,
+                       ap_orientation: str | np.ndarray = "center"):
         """Set up the actual environment as it was at frame -1 (initial condition of the system).
 
         This method initializes the physical environment by placing Access Points (APs) and User Equipment (UEs),
@@ -203,7 +213,8 @@ class SimulationEnvironment:
             If ``None``, defaults to half-wavelength spacing (λ/2).
 
         :param init_ue_pos: initial positions of the User Equipment devices. Can be:
-            - ``None``: UEs are placed randomly within the area boundaries.
+            - ``None``: UEs are placed randomly within the area boundaries at height 1.5 m.
+            - ``float``: z-axis height for each UE placement.
             - ``np.ndarray``: Explicit (U, 3) array of UE positions.
 
         :param ue_vel_mean: velocity mean for the UEs in meters/seconds. Can be:
@@ -215,8 +226,12 @@ class SimulationEnvironment:
             - ``float``: Standard deviation for a diagonal covariance matrix (σ²I) applied to all UEs.
             - ``np.ndarray``: (U, 3, 3) array of covariance matrices, one for each UE.
 
-        :raises AssertionError: If ``ue_vel_cov`` is an ndarray but does not have shape (U, 3, 3).
-        :raises AttributeError: If ``ue_vel_cov`` is not an ndarray (handled internally to create default covariance).
+        :param ue_ap_min_distance: Minimum distance between UEs and APs in meters. Default is 0.
+        :param ap_orientation: str, it represents the orientation policy of the APs. It can be "center", "fixed",
+            "azimuth", "random", or a np.ndarray of size (L, 3) providing the orientation of each AP.
+
+        :raises AssertionError: If ``ue_vel_cov`` is a ndarray but does not have shape (U, 3, 3).
+        :raises AttributeError: If ``ue_vel_cov`` is not a ndarray (handled internally to create default covariance).
 
         :returns: None. This method updates instance attributes in place.
 
@@ -229,7 +244,7 @@ class SimulationEnvironment:
            - Estimated variables (e.g., ``hat_pos_ue``, ``cov_pos_prior``) are initialized to default values.
 
         .. seealso::
-           :meth:`place_aps`, :meth:`ue_random_positioning`, :meth:`compute_ue_ap_distance`
+           :meth:`place_aps`, :meth:`ue_random_positioning`
         """
         ### Check input and populate geometry variables
         if self._load_env:
@@ -241,8 +256,17 @@ class SimulationEnvironment:
             antenna_spacing = antenna_spacing or 1 / 2
 
             # Place APs, UEs and compute their distances
-            ap_pos, ap_rot, ant_pos = self.place_aps(antenna_spacing, ap_pos)
-            init_ue_pos = self.ue_random_positioning() if init_ue_pos is None else init_ue_pos
+            ap_pos, ap_rot, ant_pos = self.place_aps(antenna_spacing, ap_pos, ap_orientation)
+            if isinstance(init_ue_pos, float):
+                # Project the minimum distance on the ue_height (z = 0)
+                min_ue_ap_dist_floor = np.sqrt(
+                    np.clip(ue_ap_min_distance ** 2 - (ap_pos[:, 2] - init_ue_pos) ** 2, 0, None)
+                )
+                init_ue_pos = self.ue_random_positioning(
+                    height=init_ue_pos,
+                    exclusion_centers=ap_pos,
+                    exclusion_radius=min_ue_ap_dist_floor,
+                )
 
             # Set velocity mean and covariance
             if isinstance(ue_vel_mean, (float, int)):
@@ -259,9 +283,9 @@ class SimulationEnvironment:
             if isinstance(ue_vel_cov, np.ndarray):
                 assert ue_vel_cov.shape == (self.U, 3, 3), "If an array, ue_vel_cov must have shape (U, 3, 3)"
             else:
-                # Set a standard diagonal matrix for all UE with sigma_x, sigma_y = V_max and sigma_z = 1e-9
+                # Set a standard diagonal matrix for all UE with sigma_x, sigma_y = V_max and sigma_z = 0
                 ue_vel_cov = ue_vel_cov ** 2 * np.repeat(np.array(np.eye(3))[np.newaxis], self.U, axis=0)
-                ue_vel_cov[:, 2, 2] = 1e-9
+                ue_vel_cov[:, 2, 2] = 0
 
             # Update geometry variables
             self.geo.update(self.frame,
@@ -300,9 +324,12 @@ class SimulationEnvironment:
             self.scene_fig.canvas.draw_idle()
             plt.pause(0.001)
 
+        # Notify readiness
+        self._scenario_ready = True
+
     def show_environment(self,
                          camera: rt.Camera | None = None,
-                         show_devices: bool = True,
+                         show_nodes: bool = True,
                          paths: rt.Paths | None = None,
                          figsize: tuple = (14, 7),
                          fig: plt.Figure | None = None) -> plt.Figure:
@@ -310,7 +337,7 @@ class SimulationEnvironment:
         rendering (if present) into a single Figure with two side-by-side panels.
 
         :param camera: sionna.rt.Camera, If None, uses `self.default_camera`.
-        :param show_devices: bool, whether to show UEs/APs in the render. Defaults to True.
+        :param show_nodes: bool, whether to show UEs/APs in the render. Defaults to True.
         :param paths: rt.Paths, propagation paths to overlay on the render.
         :param figsize: size of the combined figure.
         :param fig: plt.Figure, if None, a new Figure is created. Otherwise, the existing Figure is reused and cleared.
@@ -319,33 +346,40 @@ class SimulationEnvironment:
             `fig.show()`, `plt.show()`, or `fig.savefig(...)` on the result).
         """
         if fig is None:
-            fig, (ax_geo, ax_render) = plt.subplots(1, 2, figsize=figsize)
+            if self._load_scene:
+                fig, (ax_geo, ax_render) = plt.subplots(1, 2, figsize=figsize)
+            else:
+                fig, ax_geo = plt.subplots(1, figsize=figsize)
         else:
             fig.clf()  # wipe old axes/content
-            ax_geo, ax_render = fig.subplots(1, 2)  # rebuild the two panels in the same Figure
+            if self._load_scene:
+                ax_geo, ax_render = fig.subplots(1, 2)  # rebuild the two panels in the same Figure
+            else:
+                ax_geo = fig.subplots(1)
 
         # Left panel: top-down environment/region view, drawn directly into ax_geo
         self.geo.show(frame=self.frame, ax=ax_geo)
         ax_geo.set_title("Environment & regions (From above)")
 
         # Right panel: Mitsuba ray-traced rendering
-        if hasattr(self, 'scene') and self._load_scene:
-            camera = camera or self.default_camera
-            render_kwargs = dict(camera=camera, show_devices=show_devices,
-                                 resolution=(1024, 1024), return_bitmap=True)
-            if paths is not None:
-                render_kwargs["paths"] = paths
+        if self._load_scene:
+            if self.scene is not None:
+                camera = camera or self.default_camera
+                render_kwargs = dict(camera=camera, show_devices=show_nodes,
+                                     resolution=(1024, 1024), return_bitmap=True)
+                if paths is not None:
+                    render_kwargs["paths"] = paths
 
-            # Render as bitmap
-            image = self.scene.render(**render_kwargs)
-            to_show = image.convert(component_format=mi.Struct.Type.UInt8, srgb_gamma=True)
-            ax_render.imshow(to_show)
-            ax_render.set_title("Ray-traced scene")
-            ax_render.axis("off")
-        else:
-            ax_render.text(0.5, 0.5, "No scene available for rendering.\nCall _setup_scene() first.",
-                           ha="center", va="center", transform=ax_render.transAxes)
-            ax_render.axis("off")
+                # Render as bitmap
+                image = self.scene.render(**render_kwargs)
+                to_show = image.convert(component_format=mi.Struct.Type.UInt8, srgb_gamma=True)
+                ax_render.imshow(to_show)
+                ax_render.set_title("Ray-traced scene")
+                ax_render.axis("off")
+            else:
+                ax_render.text(0.5, 0.5, "No scene available for rendering.\nCall _setup_scene() first.",
+                               ha="center", va="center", transform=ax_render.transAxes)
+                ax_render.axis("off")
         return fig
 
     def show_estimation(self,
@@ -381,10 +415,15 @@ class SimulationEnvironment:
 
         return fig
 
-    def plot_channel(self, channel: np.ndarray,  ap_idx: int = 0, ant_idx: int = 0, ue_idx: int = 0,
-                     tol: float = 1e-2, fig: plt.Figure | None = None) -> plt.Figure:
+    def plot_channel(self,
+                     channel: np.ndarray,
+                     ap_idx: int = 0,
+                     ap_ant_idx: int = 0,
+                     ue_idx: int = 0,
+                     ue_ant_idx: int = 0,
+                     fig: plt.Figure | None = None,
+                     tol: float = 1e-2) -> plt.Figure:
         """Plot the channel of a single ap-ant-ue for the current frame as a sanity check."""
-
         # Print four equispaced subcarriers
         subcarriers = np.linspace(0, self.F, 4, dtype=np.int32, endpoint=False)
         freqs_ghz = (self.wireless.freqs + self.wireless.carrier) * 1e-9      # [GHz]
@@ -393,8 +432,15 @@ class SimulationEnvironment:
         np.hstack([self.wireless.slot_index[s] + np.array([0, self.T - 1]) for s in [0, self.S - 1]])
         times_ms = self.wireless.times * 1e3    # [ms]
 
-        # Channel dimensions are: [L, M, U, S, T, F]
-        h = channel[ap_idx, ant_idx, ue_idx].reshape(self.S * self.T, self.F)
+        # Channel standard shape is:
+        # [num_active_slots, num_rx, num_rx_ant, num_tx, num_tx_antennas, num_ofdm_symbols, num_subcarriers]
+        if self.wireless.direction == "uplink":
+            # Txs are UEs and rxs are APs
+            h = channel[:, ap_idx, ap_ant_idx, ue_idx, ue_ant_idx].reshape(self.S * self.T, self.F)
+        else:   # Downlink
+            # Txs are APs and rxs are UEs
+            h = channel[:, ue_idx, ue_ant_idx, ap_idx, ap_ant_idx].reshape(self.S * self.T, self.F)
+
         power = 10 * np.log10(np.abs(h) ** 2)
         phase = np.angle(h)
 
@@ -417,7 +463,7 @@ class SimulationEnvironment:
         else:
             fig.clf()  # wipe old axes/content
             axs = fig.subplots(4, 4)  # rebuild the two panels in the same Figure
-        fig.suptitle(f"Channel between AP {ap_idx} (antenna {ant_idx}) and UE {ue_idx} in frame {self.frame}")
+        fig.suptitle(f"Channel between AP {ap_idx} (antenna {ap_ant_idx}) and UE {ue_idx} in frame {self.frame}")
 
         # Plots vs time
         for i, j in enumerate(subcarriers):
@@ -476,12 +522,15 @@ class SimulationEnvironment:
 
     def place_aps(self,
                   antenna_spacing : float,
-                  ap_location : float | np.ndarray | None = None) -> tuple:
+                  ap_location : float | np.ndarray | None = None,
+                  orientation: str | np.ndarray = "center") -> tuple:
         """Generate APs positions.
         Returning the position of the APs and their antennas assuming symmetric antenna positioning
 
         :param antenna_spacing: float, it represents the inter-element distance in a symmetric placement
         :param ap_location: float: z-axis position of the APs; or ndarray: absolute position of the center of the array (AP)
+        :param orientation: str, it represents the orientation policy of the APs. It can be "center", "fixed", "azimuth",
+            "random", or a np.ndarray of size (L, 3) providing the orientation of each AP.
 
         :returns: tuple, containing the AP positions (np.ndarray), AP rotation class, antenna positions (np.ndarray), and sionna.rt PlanarArray
         """
@@ -509,28 +558,44 @@ class SimulationEnvironment:
 
         # Create the base array through Sionna built-in method
         ap_array = self._default_mimo_array(antenna_spacing)
+        # Consider that the default PanelArray in Sionna points towards the +X axis
+        ap_array_pointing = np.array([1., 0., 0.])
+        # Take local antenna positions for a single AP
+        local_positions = np.array(ap_array.positions(self.wireless.wavelength)).T
 
-        ## Point the array to the center of the environment
-        # Direction vector from the array to the center
-        direction = self.geo.center - ap_cen_pos
-        direction = direction / np.linalg.norm(direction, axis=1)[:, np.newaxis]  # Normalize
+        ## Point the array to the center of the environment through Rodriguez formula
+        if isinstance(orientation, np.ndarray):
+            assert orientation.shape == (self.L, 3), "Invalid orientation policy shape, it must be (L, 3)"
+            direction = np.array(orientation, dtype=float, copy=True)
+        elif orientation == "center":
+            # Direction vector from the array to the center
+            direction = self.geo.center - ap_cen_pos
+        elif orientation == "azimuth":
+            # Direction vector from the array to the center in the xy-plane only (z=0)
+            xy_direction = self.geo.center[:2] - ap_cen_pos[..., :2]
+            dist = np.linalg.norm(xy_direction, axis=-1)
+            xy_direction[dist == 0] = np.array([1., 0.])
+            direction = np.hstack((xy_direction, np.zeros((self.L, 1))), dtype=float)
+        elif orientation == "random":
+            # Direction vector randomly chosen
+            direction = 2 * (self.rng.random((self.L, 3)) - 0.5)
+        elif orientation == "fixed":
+            # Direction vector fixed as the array pointing
+            direction = np.tile(ap_array_pointing[np.newaxis], (self.L, 1))
+        else:
+            raise ValueError("Invalid orientation policy")
 
-        # Default boresight in Sionna is +Z axis: [0, 0, 1]
-        boresight = np.array([0, 0, 1])
+        # Check the direction to be non-null
+        distance = np.linalg.norm(direction, axis=-1)
+        if np.any(distance == 0):
+            raise ValueError("AP position coincides with its pointing target")
+        direction /= distance[:, np.newaxis]
 
-        # Compute the rotation matrix to align boresight with the direction using the Rodrigues' rotation formula
-        # Axis of rotation: cross product of boresight and direction
-        axis = np.cross(boresight, direction)
-        axis = axis / np.linalg.norm(axis, axis=1, keepdims=True)  # Normalize
-        # Angle of rotation: angle between boresight and direction
-        angle = np.arccos(np.clip(direction @ boresight[:, np.newaxis], -1.0, 1.0))
-        # Create rotation matrix
-        ap_rotation = Rotation.from_rotvec(axis * angle)
+        # Get rotation object
+        ap_rotation = ut.rodriguez_rotation(ap_array_pointing, direction)
 
-        ant_relative_positions = np.ones((self.L, self.M, 3))
-        # For each array, rotate it to face the center using sionna built-in methods with euler angles from rotation class
-        for l in range(self.L):
-            ant_relative_positions[l, :, :] = np.array(ap_array.rotate(self.wireless.wavelength, mi.Point3f(ap_rotation.as_euler('zyx')[l]))).T
+        # For each array, rotate it to face the center using scipy rotation
+        ant_relative_positions = np.stack([rot.apply(local_positions) for rot in ap_rotation])
 
         # Write antenna position coordinates in absolute coordinate system
         ap_ant_pos = ant_relative_positions + ap_cen_pos[:, np.newaxis, :]
@@ -538,38 +603,38 @@ class SimulationEnvironment:
         # Return tuple
         return ap_cen_pos, ap_rotation, ap_ant_pos
 
-    def ue_random_positioning(self, height: float | np.ndarray = params.UE_HEIGHT,
-                              min_dist: np.ndarray = np.ones(2), margin: float = 0.95) -> np.ndarray:
+    def ue_random_positioning(self,
+                              height: float | np.ndarray,
+                              min_dist: np.ndarray = np.ones(2),
+                              margin: float = 0.95,
+                              exclusion_centers: np.ndarray | None = None,
+                              exclusion_radius: float | np.ndarray = 0.) -> np.ndarray:
         """Generate UE random positions with minimum distance >= min_dist.
         Modified version of https://stackoverflow.com/questions/27499139/how-can-i-set-a-minimum-distance-constraint-for-generating-points-with-numpy-ran
+        Lloyd relaxation generates a Voronoi diagram creating a quasi uniform grid for the UEs. Then, random
+        perturbations are applied to the generated random positions.
 
         :param height: float or np.ndarray, height of the UEs
         :param min_dist: np.ndarray, minimum distance between UEs in x and y direction
         :param margin: float, margin from the environment to avoid UE on the boundaries of the environment.
+        :param exclusion_centers: np.ndarray, centers of circular areas to exclude
+        :param exclusion_radius: float, radius of the circular areas to exclude
 
         :returns np.array: positions of UEs
         """
+        # Check if height is scalar and convert to array if necessary
         if np.isscalar(height):
             height = height * np.ones((self.U, 1))
 
-        shrunk = self.geo.environment_shape.buffer(-(1 - margin) * np.sqrt(self.geo.environment_shape.area))
-        centers, cells = ut.lloyd_relaxation(shrunk, self.U, rng=self.rng)
-
-        coords = np.empty_like(centers)
-        for i, (pt, cell) in enumerate(zip(centers, cells)):
-            minx, miny, maxx, maxy = cell.bounds
-            max_shift = np.array([max((maxx - minx) / 2 - min_dist[0], 0),
-                                  max((maxy - miny) / 2 - min_dist[1], 0),
-                                  ])
-            # Reject-resample until the perturbed point stays inside its own cell
-            for _ in range(10):
-                noise = self.rng.uniform(-max_shift, max_shift)
-                cand = pt + noise
-                if cell.contains(sha.geometry.Point(cand)):
-                    coords[i] = cand
-                    break
-            else:
-                coords[i] = pt  # fall back to unperturbed center
+        coords, _ = ut.random_2d_positioning(
+            self.geo.environment_shape,
+            n=self.U,
+            min_dist=min_dist,
+            margin=margin,
+            exclusion_centers=exclusion_centers,
+            exclusion_radius=exclusion_radius,
+            rng=self.rng
+        )
 
         # Permute users for index randomization
         return self.rng.permutation(np.hstack((coords, height)))
@@ -603,10 +668,11 @@ class SimulationEnvironment:
             self.geo.update(self.frame, ue_location=new_position, ue_velocity=new_velocity)
 
         # Reflect the update in the scene
-        for u in range(self.U):
-            tx = self.scene.get(f"ue_{u}")
-            tx.position = new_position[u]
-            tx.velocity = new_velocity[u]
+        if self._load_scene:
+            for u in range(self.U):
+                tx = self.scene.get(f"ue_{u}")
+                tx.position = new_position[u]
+                tx.velocity = new_velocity[u]
 
         return new_position, new_velocity
 
@@ -672,11 +738,15 @@ class SimulationEnvironment:
 
         :returns: np.ndarray, shape (L, U), path gain (linear scale) between UE u and AP l.
         """
+        # Check if radio map is set up
+        if self.rm is None:
+            raise ValueError("Radio map not set up. Call `_setup_scene` first.")
+
+        # Start the computation
         positions = np.asarray(positions)
 
-        # Flatten the radio map's spatial grid; cell_centers and path_gain share the same
-        # spatial ordering (they describe the same grid), so a shared flat index into both
-        # is consistent regardless of the underlying grid layout convention.
+        # Flatten the radio map's spatial grid; cell_centers and path_gain share the same spatial ordering,
+        # so a shared flat index is consistent regardless of the underlying grid layout convention.
         centers = np.array(self.rm.cell_centers).reshape(-1, 3)  # (num_cells, 3)
         gain = np.array(self.rm.path_gain).reshape(self.L, -1)  # (L, num_cells)
 
@@ -689,6 +759,7 @@ class SimulationEnvironment:
         """Estimate the large-scale path gain (linear scale) between each given point and
         every AP, using the AP-side radio map computed in `_setup_scene` (`self.rm`).
 
+        :param rm: rt.RadioMap, a radio map, e.g., the one computed in `_setup_scene` (`self.rm`).
         :param positions: np.ndarray, shape (U, 3), query (x, y, z) positions. Only (x, y)
             is used -- the radio map is evaluated on a fixed horizontal measurement plane
             (see the `center`/`orientation` passed to `rm_solver`), so z is ignored.
@@ -697,11 +768,10 @@ class SimulationEnvironment:
         """
         positions = np.asarray(positions)
 
-        # Flatten the radio map's spatial grid; cell_centers and path_gain share the same
-        # spatial ordering (they describe the same grid), so a shared flat index into both
-        # is consistent regardless of the underlying grid layout convention.
+        # Flatten the radio map's spatial grid; cell_centers and path_gain share the same spatial ordering,
+        # so a shared flat index is consistent regardless of the underlying grid layout convention.
         centers = np.array(rm.cell_centers).reshape(-1, 3)  # (num_cells, 3)
-        gain = np.array(rm.path_gain).reshape(self.U, -1)  # (L, num_cells)
+        gain = np.array(rm.path_gain).reshape(self.U, -1)  # (U, num_cells)
 
         diff = centers[np.newaxis, :, :2] - positions[:, np.newaxis, :2]  # (U, num_cells, 2)
         nearest_cell = np.argmin(np.sum(diff ** 2, axis=-1), axis=1)  # (U,)
@@ -725,9 +795,11 @@ class SimulationEnvironment:
             self.scene.add(rt.Transmitter(name=f"ue_{u}", position=self.geo.ue_location[self.frame, u],
                                           power_dbm=self.wireless.ue_power_dbm[u]))
 
-        # Add APs as receivers, oriented per ap_orientation (z-boresight convention, see place_aps)
+        # Add APs as receivers, oriented per ap_orientation (see place_aps)
         for l in range(self.L):
-            orientation = self.geo.ap_orientation[l].as_euler('zyx')
+            with warnings.catch_warnings():
+                warnings.filterwarnings("ignore", message=r"Gimbal lock detected.*", category=UserWarning)
+                orientation = self.geo.ap_orientation[l].as_euler('ZYX')
             self.scene.add(rt.Receiver(name=f"ap_{l}",
                                        position=self.geo.ap_location[l],
                                        orientation=orientation))
@@ -766,9 +838,12 @@ class SimulationEnvironment:
                 scene_for_rm = self._build_base_scene(self._scene_name, area_coordinates=self._base_area_coordinates)[0]
                 scene_for_rm.tx_array = self.scene.rx_array
                 for l in range(self.L):
+                    with warnings.catch_warnings():
+                        warnings.filterwarnings("ignore", message=r"Gimbal lock detected.*", category=UserWarning)
+                        orientation = self.geo.ap_orientation[l].as_euler('ZYX')
                     scene_for_rm.add(rt.Transmitter(name=f"ap_{l}",
                                                     position=self.geo.ap_location[l],
-                                                    orientation=self.geo.ap_orientation[l].as_euler('zyx')))
+                                                    orientation=orientation))
 
                 # Set targets/cars
                 if self.c.num_car:
@@ -797,8 +872,11 @@ class SimulationEnvironment:
                                          **ut.filter_kwargs(self.rm_solver, **self.c.rays))
                 params.save_radiomap(rm_filename, self.rm, self.geo.ap_location)
 
-    def _build_base_scene(self, scene_name: str | None,
-                          area_coordinates: list | np.ndarray | None = None) -> tuple[rt.Scene | None, list | np.ndarray, str | None]:
+    def _build_base_scene(self,
+                          scene_name: str | None,
+                          area_coordinates: list | np.ndarray | None = None,
+                          default_room_side: float = params.ROOM_SIDE,
+                          ) -> tuple[rt.Scene | None, list | np.ndarray, str | None]:
         """Build the base propagation scene (loaded from file, or a bare floor), with
         frequency/bandwidth set -- independent of any Tx/Rx additions. Called twice: once
         for `self.scene`, once (fresh) for the AP-side radio map scene in `_setup_scene`.
@@ -820,7 +898,7 @@ class SimulationEnvironment:
         else:
             if area_coordinates is None:
                 # Default is a square room
-                first_quadrant = params.ROOM_SIDE / 2 * np.array([1, 1, 0])
+                first_quadrant = default_room_side / 2 * np.array([1, 1, 0])
                 # Order is left-top first, then clockwise.
                 area_coordinates = np.array([[-1, 1, 0], [1, 1, 0], [1, -1, 0], [-1, -1, 0]]) * first_quadrant
 
@@ -866,15 +944,19 @@ class SimulationEnvironment:
         return mesh_path
 
     def _default_mimo_array(self, antenna_spacing: float):
-        return rt.PlanarArray(num_rows=self.M_h,
-                              num_cols=self.M_v,
+        # TODO: check correct dimensions on rows and columns
+        return rt.PlanarArray(num_rows=self.M_v,
+                              num_cols=self.M_h,
                               vertical_spacing=antenna_spacing,
                               horizontal_spacing=antenna_spacing,
                               pattern="hw_dipole",
                               polarization="V")
 
-    def step(self, cto: bool = True, cfo: bool = True, sync: bool = False):
+    def step(self, *args, **kwargs):
         """Evaluates operations in a frame. The base class just moves the UEs."""
+        if not self._modules_ready:
+            raise RuntimeError("Call setup_scenario() and setup_modules() before step()")
+
         ### Update frame and geometry
         # Start by updating the frame number
         self.frame += 1
@@ -887,7 +969,7 @@ class SimulationEnvironment:
             self.scene_fig.canvas.draw_idle()
             plt.pause(0.001)
         except Exception as e:
-            print(f"Probably the figure dies in some way. Was it you?: {e}")
+            print(f"Probably the figure died in some way. Was it you?: {e}")
 
         return True
 
@@ -929,7 +1011,7 @@ class SimulationEnvironment:
 
 
 def run_episode(episode: int,
-                ra_method: type[ra.ResourceAllocationBase],
+                ra_method: type[ResourceAllocationBase],
                 ra_kwargs: dict | None = None,
                 env_kwargs: dict | None = None,
                 step_kwargs: dict | None = None,
@@ -946,7 +1028,7 @@ def run_episode(episode: int,
         this run's output filename (must be the first positional argument).
     :param ra_method: type[ResourceAllocationBase], a class from resource_allocation.py
         (not an instance -- it's constructed here once env.c/wireless/geo/estimate exist),
-        e.g. `ra.RoundRobinAllocation` (must be the second positional argument).
+        e.g. `RoundRobinAllocation` (must be the second positional argument).
     :param ra_kwargs: dict | None, extra kwargs forwarded to `ra_method`'s constructor.
     :param env_kwargs: dict | None, kwargs forwarded to `SimulationEnvironment` methods
         (num_ue, num_ap, area_coordinates, lo_ppm, ue_power, ...). `episode` is filled in
@@ -979,7 +1061,6 @@ def run_episode(episode: int,
     step_kwargs = step_kwargs or {}
 
     # Validate the complete argument dictionary before routing it to each stage.
-    # Dataclass types come from the selected scenario so subclass fields are supported.
     ut.validate_kwargs(
         env_kwargs,
         SimulationEnvironment.shared_type,
@@ -1000,6 +1081,7 @@ def run_episode(episode: int,
     sha_kwargs = ut.filter_call_kwargs(SimulationEnvironment.shared_type, **env_kwargs)
     wir_kwargs = ut.filter_call_kwargs(SimulationEnvironment.wireless_type, **env_kwargs)
     ini_kwargs = ut.filter_call_kwargs(SimulationEnvironment, **env_kwargs)
+    # TODO: check the following
     ini_kwargs.setdefault("env_dirpath", save_dirpath)
     env = SimulationEnvironment(episode, sha_kwargs, wir_kwargs, **ini_kwargs)
 
@@ -1022,7 +1104,7 @@ def run_episode(episode: int,
     # --- Save data ---
     save_path = None
     if save:
-        ra_method_label = next(key for key, val in ra.available_methods.items() if val == ra_method)
+        ra_method_label = next(key for key, val in available_methods.items() if val == ra_method)
         filename = os.path.join(save_dirpath, f"{ra_method_label}_ep{episode:04d}.npz")
         save_path = params.save_params_npz(filename, c=env.c, wireless=env.wireless, geo=env.geo,
                                            estimate=env.estimate)
@@ -1033,14 +1115,12 @@ def run_episode(episode: int,
     return summary
 
 
-results_labels = ["avg_se_achievable", "avg_se_set", "avg_queue", "avg_misclassification", "avg_risk_predicted", "avg_risk_hat"]
-
-
 if __name__ == "__main__":
     num_ue = 12
     avg_datasize, queue_max = params.arrival_rate_init(avg_se=2, num_ue=num_ue)
     env_args = {"debugging": True, "num_frames": 50, "num_ue": num_ue, "traffic_avg": avg_datasize,
                 "queue_max": queue_max, "num_rgions": 32, "ue_vel_mean": 5}
     step_args = {"cfo": False}
-    res = run_episode(1, ra.RoundRobinAllocation, env_kwargs=env_args, step_kwargs=step_args)
+    res = run_episode(1, RoundRobinAllocation, env_kwargs=env_args, step_kwargs=step_args)
     print(res)
+

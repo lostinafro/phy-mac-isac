@@ -7,7 +7,7 @@ from sionna.phy import config as sionna_config
 from .. import utils as ut
 from ..modules import params
 from . import parameters as semantic_params
-from ..modules import resource_allocation as ra
+from . import allocation as ra
 from ..modules.transmission import SEuplinkOFDMpostMRC
 from ..modules.trackers import LinearKalmanTracker
 from ..modules.theory import DMimoFarFieldOMA
@@ -31,6 +31,9 @@ class SemanticISACScenario(SimulationEnvironment):
 
     def step(self, cto: bool = True, cfo: bool = True, sync: bool = False):
         """Evaluates operations in a frame"""
+        if not self._modules_ready:
+            raise RuntimeError("Call setup_scenario() and setup_modules() before step()")
+
         ### Update frame and geometry
         # Start by updating the frame number
         self.frame += 1
@@ -77,33 +80,33 @@ class SemanticISACScenario(SimulationEnvironment):
 
         ### Perform allocation based on prior
         # Evaluate common SNR related to eFIM
-        snr = self.wireless.ue_power / self.wireless.nob_ap * len(self.ra_method.pilot_ofdm_symbol_indices())
+        snr = self.wireless.ue_power / self.wireless.nob_ap * len(self.ra_module.pilot_ofdm_symbol_indices())
         # Average energy over antennas (far-field approximation), symbols and subcarriers in a slot (quasi-static fading)
         beta = np.mean(np.abs(channel) ** 2, axis=(1, 4, 5))  # (L, U, S)
 
         # Compute eFIM and rate assuming perfect knowledge (oracle) (shape (S, U, d, d))
         oracle_efim = self.performance.eval_efim(snr, self.geo.ue_location[self.frame], beta.transpose())
-        oracle_se = self.performance.eval_achievable_se(beta.transpose(), len(self.ra_method.pilot_ofdm_symbol_indices()))
+        oracle_se = self.performance.eval_achievable_se(beta.transpose(), len(self.ra_module.pilot_ofdm_symbol_indices()))
 
         # Compute predicted eFIM and rate with estimated values (shape (U, d, d))
         # Using 3dB margin to account for UL/DL mismatches
         beta_hat = self.estimate_gain_dl(self.estimate.ue_pos_hat_prio[self.frame]) / 2
         predicted_efim = np.squeeze(self.performance.eval_efim(snr, self.estimate.ue_pos_hat_prio[self.frame], beta_hat[..., np.newaxis].transpose()), axis=0)
-        predicted_se = np.squeeze(self.performance.eval_achievable_se(beta_hat[..., np.newaxis].transpose(), len(self.ra_method.pilot_ofdm_symbol_indices())), axis=0)
+        predicted_se = np.squeeze(self.performance.eval_achievable_se(beta_hat[..., np.newaxis].transpose(), len(self.ra_module.pilot_ofdm_symbol_indices())), axis=0)
 
         # Compute allocation matrix based on the predictions
         kwargs = {"efim": predicted_efim, "covariance_pri": ue_pos_cov_pri, "delta_queue": delta_queue}
-        ue_slot_map = self.ra_method(self.frame, **kwargs)
+        ue_slot_map = self.ra_module(self.frame, **kwargs)
         # Take indexing variables
-        ue_active_per_slot, slot_idx, ue_idx = self.ra_method.scheduled_ues(ue_slot_map)
+        ue_active_per_slot, slot_idx, ue_idx = self.ra_module.scheduled_ues(ue_slot_map)
         not_selected = ~np.isin(np.arange(self.U), ue_idx)
         # Compute approximate semantic risk through oracle eFIM
         risk_hat = np.zeros(self.U)
-        risk0, risk1, _ = self.ra_method.eval_semantic_risk(self.frame, oracle_efim, ue_pos_cov_pri)
+        risk0, risk1, _ = self.ra_module.eval_semantic_risk(self.frame, oracle_efim, ue_pos_cov_pri)
         risk_hat[ue_idx] = risk1[slot_idx, ue_idx]
         risk_hat[not_selected] = risk0[not_selected]
         # Compute predicted risk
-        risk_predicted_full = self.ra_method.output_risks()
+        risk_predicted_full = self.ra_module.output_risks()
         risk_predicted = np.zeros(self.U)
         risk_predicted[ue_idx] = risk_predicted_full[ue_idx, 1]
         risk_predicted[not_selected] = risk_predicted_full[not_selected, 0]
@@ -116,10 +119,10 @@ class SemanticISACScenario(SimulationEnvironment):
         channel_cf = channel_cf.reshape(self.S, 1, self.L * self.M, self.U, 1, self.T, self.F)    # [S, 1, L*M, U, 1, T, F]
 
         # Apply the allocation mask
-        channel_cf *= self.ra_method.broadcast_slot_ue_mask(ue_slot_map) * self.ra_method.broadcast_ap_ue_mask()
+        channel_cf *= self.ra_module.broadcast_slot_ue_mask(ue_slot_map) * self.ra_module.broadcast_ap_ue_mask()
 
         # Perform (abstracted) usual centralized CF-mMIMO transmission
-        sinr_eff, se_eff = self.transmission_module(channel_cf)
+        sinr_eff, se_eff = self.transmission_module(channel_cf, active_mask=ue_slot_map)
 
         ### Update queues
         # Checking SE achievability
@@ -195,7 +198,8 @@ class SemanticISACScenario(SimulationEnvironment):
                 print(f"Probably the figure dies in some way. Was it you?: {e}")
 
             try:
-                self.channel_fig = self.plot_channel(channel, fig=getattr(self, "channel_fig", None))
+                channel_reshaped = np.expand_dims(np.moveaxis(channel.copy(), 3, 0), axis=4)  # [S, L, M, U, 1, T, F]
+                self.channel_fig = self.plot_channel(channel_reshaped, fig=getattr(self, "channel_fig", None))
                 self.channel_fig.canvas.draw_idle()
                 plt.pause(0.001)
             except Exception as e:
@@ -221,7 +225,7 @@ class SemanticISACScenario(SimulationEnvironment):
             base_x = 0.1
             self.env_fig.text(x=base_x, y=0.9, s=f"Allocated UEs: {msg}")
             try:
-                msg = [f"{u:02d}" for u in np.sort(np.nonzero(self.ra_method.forced)[0])]
+                msg = [f"{u:02d}" for u in np.sort(np.nonzero(self.ra_module.forced)[0])]
                 self.env_fig.text(x=3 * base_x, y=0.9, s=f"Forced by comm: {' '.join(msg)}")
             except ValueError:
                 pass
@@ -241,7 +245,7 @@ class SemanticISACScenario(SimulationEnvironment):
             # Check issues in the oracle if any
             unachievable_err = np.nonzero(se_achievable < oracle_se[slot_idx, ue_idx])[0]
             if len(unachievable_err) > 0:
-                print(f"ERROR: Unachievable oracle rate for UE {unachievable_err}")
+                print(f"ERROR: Unachievable oracle rate for UE {ue_idx[unachievable_err]}")
 
             print("\nCOMMS:")
             msg = [f"{float(s):.2f}" for s in self.metrics.se_achievable[self.frame]]
@@ -295,7 +299,7 @@ class SemanticISACScenario(SimulationEnvironment):
             self.env_fig.text(x=base_x, y=0.78, s=f"mispr: {' '.join(msg)}")
 
             os.makedirs(self.env_folder, exist_ok=True)
-            ra_method_label = next(key for key, val in ra.available_methods.items() if val == type(self.ra_method))
+            ra_method_label = next(key for key, val in ra.available_methods.items() if val == type(self.ra_module))
             filename = os.path.join(self.env_folder, f"{ra_method_label}_f{self.frame:02d}_ep{self.episode:02d}.png")
             self.env_fig.savefig(filename, dpi=300)
 
@@ -304,7 +308,7 @@ class SemanticISACScenario(SimulationEnvironment):
 
 
 def run_episode(episode: int,
-                ra_method: type[ra.ResourceAllocationBase],
+                ra_method: type[ra.SemanticResourceAllocationBase],
                 ra_kwargs: dict | None = None,
                 env_kwargs: dict | None = None,
                 step_kwargs: dict | None = None,
@@ -343,6 +347,7 @@ def run_episode(episode: int,
     if device is None:
         device = "cpu"
 
+    sionna_config.device = device
     device = torch.device(device)
 
     if device.type == "cuda" and not torch.cuda.is_available():
@@ -453,12 +458,10 @@ def common_parser():
     parser.add_argument("--cpu", action='store_true', help="Set the processing on the CPU only")
 
     args = parser.parse_args()
-    if args.cpu:
-        sionna_config.device = "cpu"
-        device = "cpu"
-    else:
-        sionna_config.device = "cuda:0"
+    if not args.cpu and torch.cuda.is_available():
         device = "cuda:0"
+    else:
+        device = "cpu"
 
     return args.ra_method, args.parallel, args.savesubdir, args.quiet, args.overwrite, args.concurrent, device
 
@@ -469,5 +472,5 @@ if __name__ == "__main__":
     env_args = {"debugging": True, "num_frames": 100, "num_ue": num_ue, "traffic_avg": avg_datasize,
                 "queue_max": queue_max, "num_regions": 32, "ue_vel_mean": 5}
     step_args = {"cfo": False}
-    summary = run_episode(1, ra.RoundRobinAllocation, env_kwargs=env_args, step_kwargs=step_args)
+    summary = run_episode(1, ra.RoundRobinAllocation, env_kwargs=env_args, step_kwargs=step_args, device="cuda:0")
     print(summary)

@@ -5,12 +5,18 @@ import GPUtil
 import numpy as np
 import pandas as pd
 from tqdm import tqdm
-from datetime import date
 from contextlib import contextmanager
 from pathlib import Path
 import tempfile
 import hashlib
 from filelock import FileLock
+
+
+def directory_from_env(name: str, default: str | Path) -> str:
+    """Return an absolute directory, expanding environment variables and ~."""
+    value = os.environ.get(name) or str(default)
+    expanded = os.path.expanduser(os.path.expandvars(value))
+    return str(Path(expanded).resolve())
 
 
 @contextmanager
